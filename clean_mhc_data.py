@@ -31,7 +31,7 @@ df_subset = df[mask]
 df_clean = pd.DataFrame({
 	'MHC Allele' : df_subset['MHC Allele'], 
 	'Epitope' : df_subset['Epitope'], 
-	'IC50': df_subset['Quantitative Result']
+	'IC50': df_subset['Quantitative Result'],
 })
 
 type1_mask = df_clean['MHC Allele'].str.contains("HLA-(A|B|C)")
@@ -41,7 +41,7 @@ print "# Type 1", len(df_type1)
 df_type1.to_csv("mhc1.csv")
 
 type2_mask = df_clean['MHC Allele'].str.startswith("HLA-D")
-df_type2 = df_subset[type2_mask]
+df_type2 = df_clean[type2_mask]
 print "# Type 2", len(df_type2)
 df_type2.to_csv("mhc2.csv")
 
