@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd 
+from collections import Counter 
 
 import pmbec 
 from epitopes import amino_acid 
@@ -62,35 +63,32 @@ def encode_pairwise_coefficients(peptide_seqs, mhc_seqs, model_weights):
 	n_dims = 20 * 20
 	n_samples = len(peptide_seqs)
 	coeffs = np.zeros((n_samples, n_dims), dtype=float)
-
+	counts = Counter()
 	for row_idx, peptide_seq in enumerate(peptide_seqs):
 		allele_seq = mhc_seqs[row_idx]
-		print ">>", peptide_seq, allele_seq
 		for i, peptide_letter in enumerate(peptide_seq):
 			for j, mhc_letter in enumerate(allele_seq):
 				key = "%s%s" % (peptide_letter, mhc_letter)
+				counts[key] += 1
 				col_idx = AMINO_ACID_PAIR_POSITIONS[key]
 				weight_idx = i * 9 + j
 				coeffs[row_idx, col_idx] += model_weights[weight_idx]
+	print counts 
+	assert False
 	return coeffs
 
 def estimate_pairwise_features(peptide_seqs, mhc_seqs, model_weights, Y):
 	C = encode_pairwise_coefficients(peptide_seqs, mhc_seqs, model_weights)
+	print C[0:10]
 	print "Solving linear system..."
 	feature_weights, _, _, _ = np.linalg.lstsq(C, Y)
 	feature_dict = {}
 	n_mhc_letters = mhc_seqs[0]
 	for idx, v in enumerate(feature_weights):
-
-		mhc_idx = idx % n_mhc_letters
-		pep_idx = idx / 9 
-		for row_idx, peptide_seq in enumerate(peptide_seqs):
-			mhc_seq = mhc_seqs[row_idx]
-			pep_letter = peptide_seq[pep_idx]
-			mhc_letter = mhc_seq[mhc_idx]
-
-			key = "%s%s" % (peptide_letter, mhc_letter)
-			feature_dict[key] = v 
+		i = idx % 20
+		j = idx / 20
+		key = "%s%s" % (AMINO_ACID_LETTERS[i], AMINO_ACID_LETTERS[j])
+		feature_dict[key] = v 
 	return feature_dict
 
 
@@ -192,8 +190,6 @@ def generate_training_data(binding_data_filename = "mhc1.csv", mhc_seq_filename 
 	W = np.array(W)
 	Y = np.array(Y)
 
-	weights = np.linalg.lstsq(X,Y)[0]
-
 	PP = []
 	PA = []
 	PY = []
@@ -205,7 +201,15 @@ def generate_training_data(binding_data_filename = "mhc1.csv", mhc_seq_filename 
 			PA.append(allele_seq)
 			PY.append(peptide_ic50[i])
 
-	d = estimate_pairwise_features(PP, PA, weights, PY)
+	model = sklearn.linear_model.Ridge()
+	model.fit(X,np.log(Y))
+
+	weights = model.coef_
+	print weights
+	print np.max(weights)
+
+
+	d = estimate_pairwise_features(PP, PA, weights, np.log(PY))
 
 	print d 
 	print "Generated data shape", X.shape
