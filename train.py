@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd 
-from pmbec import read_coefficients
+
+import pmbec 
 from epitopes import amino_acid 
 
 
@@ -8,6 +9,81 @@ import sklearn.linear_model
 import sklearn.svm 
 import sklearn.ensemble
 import sklearn.decomposition 
+
+AMINO_ACID_LETTERS =list(sorted([
+	'G', 'P',
+	'A', 'V',
+	'L', 'I',
+	'M', 'C',
+	'F', 'Y', 
+	'W', 'H', 
+	'K', 'R',
+	'Q', 'N', 
+	'E', 'D',
+	'S', 'T',
+]))
+
+AMINO_ACID_PAIRS = [["%s%s" % (x,y) for y in AMINO_ACID_LETTERS] for x in AMINO_ACID_LETTERS]
+
+AMINO_ACID_PAIR_POSITIONS = dict(enumerate(AMINO_ACID_PAIRS))
+
+def encode_sequences(peptide_seqs, mhc_seqs, pairwise_features):
+	assert all(len(s) == 9 for s in peptide_seqs)
+	assert len(peptide_seqs) == len(mhc_seqs)
+	assert len(pairwise_features) == (20*20)
+	n_mhc_letters = len(mhc_seqs[0])
+	assert all(len(s) == m_mhc_letters for s in mhc_seqs)
+
+	n_dims = 9 * n_mhc_letters
+	n_samples = len(peptide_seqs)
+	X = np.zeros((n_samples, n_dims), dtype=float)
+
+	for row_idx, peptide_seq in enumerate(peptide_seqs):
+		allele_seq = mhc_seqs[row_idx]
+		for i, peptide_letter in enumerate(peptide_seq):
+			for j, mhc_letter in enumerate(allele_seq):
+				col_idx = i *  9 + j
+				key = "%s%s" % (peptide_letter, mhc_letter)
+				X[row_idx, col_idx] = pairwise_features[key]
+	return X 
+
+
+def encode_pairwise_coefficients(peptide_seqs, mhc_seqs, model_weights):
+	"""
+	Re-encode sequences into a 20x20 AA pairwise feature matirx relative to some linear model model_weights
+	"""
+	assert len(model_weights) == len(AMINO_ACID_PAIRS)
+	assert all(len(s) == 9 for s in peptide_seqs)
+	assert len(peptide_seqs) == len(mhc_seqs)
+	n_mhc_letters = len(mhc_seqs[0])
+	assert all(len(s) == m_mhc_letters for s in mhc_seqs)
+
+
+	n_dims = 20 * 20
+	n_samples = len(peptide_seqs)
+	coeffs = np.zeros((n_samples, n_dims), dtype=float)
+
+	for row_idx, peptide_seq in enumerate(peptide_seqs):
+		allele_seq = mhc_seqs[row_idx]
+		for i, peptide_letter in enumerate(peptide_seq):
+			for j, mhc_letter in enumerate(allele_seq):
+				key = "%s%s" % (peptide_letter, mhc_letter)
+				col_idx = AMINO_ACID_PAIR_POSITIONS[key]
+				weight_idx = i * 9 + j
+				coeffs[row_idx, col_idx] += model_weights[weight_idx]
+	return coeffs
+
+def estimate_pairwise_features(peptide_seqs, mhc_seqs, model_weights, Y):
+	coeff = encode_pairwise_coefficients(peptide_seqs, mhc_seqs, model_weights)
+	feature_weights, _, _, _ = np.linalg.lstsq(C, Y)
+	feature_dict = {}
+	for idx, v in enumerate(feature_weights):
+		i = idx / 9
+		j = idx % 9
+		key = "%s%s" % (AMINO_ACID_LETTERS[i], AMINI_ACID_LETTERS[j])
+		feature_dict[key] = v 
+	return feature_dict
+
 
 def generate_training_data(binding_data_filename = "mhc1.csv", mhc_seq_filename = "MHC_aa_seqs.csv"):
 	df_peptides = pd.read_csv(binding_data_filename).reset_index()
@@ -117,20 +193,25 @@ def generate_training_data(binding_data_filename = "mhc1.csv", mhc_seq_filename 
 
 class LogLinearRegression(sklearn.linear_model.LinearRegression):
 	def fit(self, X, Y, sample_weight = None):
-		return sklearn.linear_model.RidgeCV.fit(self, X, np.log(Y))
+		#Y = np.minimum(1.0, np.maximum(0.0, 1.0 - np.log(Y)/ np.log(50000)))
+		Y = np.log(Y)
+		return sklearn.linear_model.LinearRegression.fit(self, X, Y)
 
 	def predict(self, X):
-		logY = sklearn.linear_model.RidgeCV.predict(self, X)
-		return np.exp(logY)
+		transformed_Y = sklearn.linear_model.LinearRegression.predict(self, X)
+		#logY = -transformed_Y + 1.0
+		#return 50000 ** logY
+		return np.exp(transformed_Y)
 
-class Regressor(object):
+
+class TwoPassRegressor(object):
 
 	def __init__(self, classifier_threshold = 10**3):
 		self.classifier_threshold = classifier_threshold
 		
 	def fit(self,X,Y,W=None):
 
-		categories =  np.maximum(0, (np.log10(Y) / np.log10(100)).astype('int')) #Y <= self.classifier_threshold #
+		categories =  np.maximum(0, (np.log10(Y) / np.log10(50)).astype('int')) #Y <= self.classifier_threshold #
 		print np.unique(categories)
 		self.first_pass = sklearn.ensemble.RandomForestClassifier() #sklearn.linear_model.LogisticRegression()
 		self.first_pass.fit(X,categories)
@@ -138,9 +219,7 @@ class Regressor(object):
 		Y = np.log(Y)
 		self.regressors = [None] * (np.max(categories) + 1)
 		for category in np.unique(categories):
-
 			mask = categories == category
-			print 50**category, np.sum(mask)
 			regressor = sklearn.linear_model.RidgeCV()
 			regressor.fit(X[mask], Y[mask])
 			self.regressors[category] = regressor
@@ -157,6 +236,22 @@ class Regressor(object):
 			pred = self.regressors[category].predict(X[mask])
 			combined[mask] = pred 
 		return np.exp(combined) 
+
+
+"""
+class Regressor(object):
+	def __init__(self, initial_coefficients = None):
+		if initial_coefficients is None:
+			self.pairwise_features = pmbec.read_coefficients()
+		else:
+			self.pairwise_features = initial_coefficients 
+
+	def fit(self, X, Y, sample_weight = None):
+
+	def predict(self, X):
+"""
+
+
 
 if __name__ == '__main__':
 	
@@ -220,7 +315,7 @@ if __name__ == '__main__':
 			W_train, W_test = split(W, test_start, test_stop)
 
 			print "-- fitting regression model"
-			model = Regressor()
+			model = LogLinearRegression()
 			model.fit(X_train, Y_train, W_train)
 
 			pred = model.predict(X_test)

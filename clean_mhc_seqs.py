@@ -23,7 +23,7 @@ for i, c in enumerate(first):
 		total += 1
 	fraction =  float(count)/total
 	print i, c, count, "/", total, fraction 
-	if fraction > 0.95:
+	if fraction > 0.5:
 		print "-- Skipping position %d" % i 
 		keep_position[i] = False 
 
