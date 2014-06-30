@@ -23,16 +23,16 @@ AMINO_ACID_LETTERS =list(sorted([
 	'S', 'T',
 ]))
 
-AMINO_ACID_PAIRS = [["%s%s" % (x,y) for y in AMINO_ACID_LETTERS] for x in AMINO_ACID_LETTERS]
+AMINO_ACID_PAIRS = ["%s%s" % (x,y) for y in AMINO_ACID_LETTERS for x in AMINO_ACID_LETTERS]
 
-AMINO_ACID_PAIR_POSITIONS = dict(enumerate(AMINO_ACID_PAIRS))
+AMINO_ACID_PAIR_POSITIONS = dict( (y, x) for x, y in enumerate(AMINO_ACID_PAIRS))
 
 def encode_sequences(peptide_seqs, mhc_seqs, pairwise_features):
 	assert all(len(s) == 9 for s in peptide_seqs)
 	assert len(peptide_seqs) == len(mhc_seqs)
 	assert len(pairwise_features) == (20*20)
 	n_mhc_letters = len(mhc_seqs[0])
-	assert all(len(s) == m_mhc_letters for s in mhc_seqs)
+	assert all(len(s) == n_mhc_letters for s in mhc_seqs)
 
 	n_dims = 9 * n_mhc_letters
 	n_samples = len(peptide_seqs)
@@ -52,12 +52,12 @@ def encode_pairwise_coefficients(peptide_seqs, mhc_seqs, model_weights):
 	"""
 	Re-encode sequences into a 20x20 AA pairwise feature matirx relative to some linear model model_weights
 	"""
-	assert len(model_weights) == len(AMINO_ACID_PAIRS)
 	assert all(len(s) == 9 for s in peptide_seqs)
-	assert len(peptide_seqs) == len(mhc_seqs)
+	assert len(peptide_seqs) == len(mhc_seqs), "%d != %d" % (len(peptide_seqs), len(mhc_seqs))
 	n_mhc_letters = len(mhc_seqs[0])
-	assert all(len(s) == m_mhc_letters for s in mhc_seqs)
-
+	assert all(len(s) == n_mhc_letters for s in mhc_seqs)
+	assert len(model_weights) == (9 * n_mhc_letters), "model len %d != %d" % (len(model_weights), (9 * n_mhc_letters))
+	
 
 	n_dims = 20 * 20
 	n_samples = len(peptide_seqs)
@@ -65,6 +65,7 @@ def encode_pairwise_coefficients(peptide_seqs, mhc_seqs, model_weights):
 
 	for row_idx, peptide_seq in enumerate(peptide_seqs):
 		allele_seq = mhc_seqs[row_idx]
+		print ">>", peptide_seq, allele_seq
 		for i, peptide_letter in enumerate(peptide_seq):
 			for j, mhc_letter in enumerate(allele_seq):
 				key = "%s%s" % (peptide_letter, mhc_letter)
@@ -74,14 +75,22 @@ def encode_pairwise_coefficients(peptide_seqs, mhc_seqs, model_weights):
 	return coeffs
 
 def estimate_pairwise_features(peptide_seqs, mhc_seqs, model_weights, Y):
-	coeff = encode_pairwise_coefficients(peptide_seqs, mhc_seqs, model_weights)
+	C = encode_pairwise_coefficients(peptide_seqs, mhc_seqs, model_weights)
+	print "Solving linear system..."
 	feature_weights, _, _, _ = np.linalg.lstsq(C, Y)
 	feature_dict = {}
+	n_mhc_letters = mhc_seqs[0]
 	for idx, v in enumerate(feature_weights):
-		i = idx / 9
-		j = idx % 9
-		key = "%s%s" % (AMINO_ACID_LETTERS[i], AMINI_ACID_LETTERS[j])
-		feature_dict[key] = v 
+
+		mhc_idx = idx % n_mhc_letters
+		pep_idx = idx / 9 
+		for row_idx, peptide_seq in enumerate(peptide_seqs):
+			mhc_seq = mhc_seqs[row_idx]
+			pep_letter = peptide_seq[pep_idx]
+			mhc_letter = mhc_seq[mhc_idx]
+
+			key = "%s%s" % (peptide_letter, mhc_letter)
+			feature_dict[key] = v 
 	return feature_dict
 
 
@@ -141,7 +150,7 @@ def generate_training_data(binding_data_filename = "mhc1.csv", mhc_seq_filename 
 		mhc_seqs_dict[allele] = seq 
 
 
-	pairwise = read_coefficients()
+	pairwise = pmbec.read_coefficients()
 
 	"""
 	hydropathy = amino_acid.hydropathy.value_dict
@@ -183,7 +192,22 @@ def generate_training_data(binding_data_filename = "mhc1.csv", mhc_seq_filename 
 	W = np.array(W)
 	Y = np.array(Y)
 
-	
+	weights = np.linalg.lstsq(X,Y)[0]
+
+	PP = []
+	PA = []
+	PY = []
+	for i, p in enumerate(peptide_seqs):
+		allele = peptide_alleles[i]
+		if allele in mhc_seqs_dict:
+			allele_seq = mhc_seqs_dict[allele]
+			PP.append(p)
+			PA.append(allele_seq)
+			PY.append(peptide_ic50[i])
+
+	d = estimate_pairwise_features(PP, PA, weights, PY)
+
+	print d 
 	print "Generated data shape", X.shape
 	assert len(W) == X.shape[0]
 	assert len(Y) == X.shape[0]
