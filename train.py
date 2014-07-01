@@ -28,25 +28,34 @@ AMINO_ACID_PAIRS = ["%s%s" % (x,y) for y in AMINO_ACID_LETTERS for x in AMINO_AC
 
 AMINO_ACID_PAIR_POSITIONS = dict( (y, x) for x, y in enumerate(AMINO_ACID_PAIRS))
 
-def encode_sequences(peptide_seqs, mhc_seqs, pairwise_features):
-	assert all(len(s) == 9 for s in peptide_seqs)
-	assert len(peptide_seqs) == len(mhc_seqs)
-	assert len(pairwise_features) == (20*20)
-	n_mhc_letters = len(mhc_seqs[0])
-	assert all(len(s) == n_mhc_letters for s in mhc_seqs)
+def feature_dictionary_to_vector(dictionary):
+	"""
+	Takes a dictionary mapping from amino acid letter pairs (e.g. "AC"), 
+	re-encodes the keys as indices
+	"""
+	vec = [None] * len(AMINO_ACID_PAIRS)
+	for letter_pair, value in dictionary.iteritems():
+		idx = AMINO_ACID_PAIR_POSITIONS[letter_pair]
+		vec[idx] = value
+	assert all(vi is not None for vi in vec) 
+	return np.array(vec)
 
-	n_dims = 9 * n_mhc_letters
-	n_samples = len(peptide_seqs)
-	X = np.zeros((n_samples, n_dims), dtype=float)
 
-	for row_idx, peptide_seq in enumerate(peptide_seqs):
-		allele_seq = mhc_seqs[row_idx]
-		for i, peptide_letter in enumerate(peptide_seq):
-			for j, mhc_letter in enumerate(allele_seq):
-				col_idx = i *  9 + j
-				key = "%s%s" % (peptide_letter, mhc_letter)
-				X[row_idx, col_idx] = pairwise_features[key]
-	return X 
+def encode_inputs(X_pair_indices, pairwise_feature_vec):
+	"""
+	X_pair_indices : 2d array
+		Indices of amino acid combinations for each (peptide, allele pseudosequence) entry
+	pairwise_features : dict
+		Maps from AA pair indices to continuous values 
+	""" 
+	n_samples, n_dims = X_pair_indices.shape 
+
+	assert len(pairwise_feature_vec) == (20*20)
+	X_encoded = np.zeros((n_samples, n_dims), dtype=float)
+	for row_idx, x in enumerate(X_pair_indices):
+		for col_idx, xi in enumerate(x):
+			X[row_idx, col_idx] = pairwise_feature_vec[xi]
+	return X_encoded
 
 
 def encode_pairwise_coefficients(peptide_seqs, mhc_seqs, model_weights):
@@ -148,19 +157,6 @@ def generate_training_data(binding_data_filename = "mhc1.csv", mhc_seq_filename 
 		mhc_seqs_dict[allele] = seq 
 
 
-	pairwise = pmbec.read_coefficients()
-
-	"""
-	hydropathy = amino_acid.hydropathy.value_dict
-
-	pairwise = {}
-	amino_acids = hydropathy.keys()
-	for k1 in amino_acids:
-		for k2 in amino_acids:
-			key = '%s%s' % (k1,k2)
-			pairwise[key] = hydropathy[k1] + hydropathy[k2]
-	"""
-	
 	X = []
 	W = []
 	Y = []
@@ -173,15 +169,10 @@ def generate_training_data(binding_data_filename = "mhc1.csv", mhc_seq_filename 
 			ic50 = peptide_ic50[peptide_idx]
 			print peptide_idx, allele, peptide, allele_seq, ic50
 			for start_pos in xrange(0, n_letters - 8):
-				vec = np.zeros(n_dims)
 				stop_pos = start_pos + 9
-				i = 0
-				for peptide_letter in peptide[start_pos:stop_pos]:
-					for mhc_letter in allele_seq:
-						key = "%s%s" % (peptide_letter, mhc_letter)
-						value = pairwise[key]
-						vec[i] = value 
-						i += 1
+				vec = [AMINO_ACID_PAIR_POSITIONS[peptide_letter + mhc_letter] 
+				       for peptide_letter in peptide[start_pos:stop_pos]
+				       for mhc_letter in allele_seq]
 				X.append(np.array(vec))
 				Y.append(ic50)
 				weight = 1.0 / (n_letters - 8)
@@ -190,28 +181,6 @@ def generate_training_data(binding_data_filename = "mhc1.csv", mhc_seq_filename 
 	W = np.array(W)
 	Y = np.array(Y)
 
-	PP = []
-	PA = []
-	PY = []
-	for i, p in enumerate(peptide_seqs):
-		allele = peptide_alleles[i]
-		if allele in mhc_seqs_dict:
-			allele_seq = mhc_seqs_dict[allele]
-			PP.append(p)
-			PA.append(allele_seq)
-			PY.append(peptide_ic50[i])
-
-	model = sklearn.linear_model.Ridge()
-	model.fit(X,np.log(Y))
-
-	weights = model.coef_
-	print weights
-	print np.max(weights)
-
-
-	d = estimate_pairwise_features(PP, PA, weights, np.log(PY))
-
-	print d 
 	print "Generated data shape", X.shape
 	assert len(W) == X.shape[0]
 	assert len(Y) == X.shape[0]
@@ -278,6 +247,94 @@ class Regressor(object):
 
 	def predict(self, X):
 """
+def split(data, start, stop):
+	if len(data.shape) == 1:
+		train = np.concatenate([data[:start], data[stop:]])
+	else:
+		train = np.vstack([data[:start], data[stop:]])
+	test = data[start:stop]
+	return train, test 
+
+def shuffle(X, Y, W):
+	n = len(Y)
+	indices = np.arange(n)
+	np.random.shuffle(indices)
+	X = X[indices]
+	Y = Y[indices]
+	W = W[indices]
+	return X, Y, W
+
+def load_training_data():
+	print "Loading X"
+	X = np.load("X.npy")
+	print "Loading Y"
+	Y = np.load("Y.npy")
+	print "Loading W"
+	W = np.load("W.npy")
+	assert len(X) == len(Y)
+	assert len(W) == len(Y)
+	assert len(X.shape) == 2
+	return X, Y, W
+
+def save_training_data(X, Y, W):
+	print "Saving to disk..."
+	np.save("X.npy", X)
+	np.save("W.npy", W)
+	np.save("Y.npy", Y)
+
+def cross_validation(X, Y, W, n_splits = 10):
+
+	coeff = pmbec.read_coefficients()
+	coeff_vec = feature_dictionary_to_vector(coeff)
+	X = encode_inputs(X, coeff_vec)
+
+	n_samples = len(Y)
+	split_size = n_samples / n_splits
+	
+	errors = []
+	accuracies = []
+	sensitivities = []
+	specificities = []
+	for split_idx in xrange(n_splits):
+		test_start = split_idx * split_size
+		test_stop = min((split_idx + 1) * split_size, n_samples)
+		print "Split #%d" % (split_idx+1), "n =",  n_samples - (test_stop - test_start)
+		
+		X_train, X_test = split(X, test_start, test_stop)
+
+
+
+		assert len(X_train.shape) == len(X_test.shape)
+		assert X_train.shape[1] == X_test.shape[1]
+		Y_train, Y_test = split(Y, test_start, test_stop)
+		W_train, W_test = split(W, test_start, test_stop)
+
+		print "-- fitting regression model"
+		model = LogLinearRegression()
+		model.fit(X_train, Y_train, W_train)
+
+		pred = model.predict(X_test)
+		split_error = np.sum(np.abs(pred-Y_test) * W_test) / np.sum(W_test)
+		errors.append(split_error)
+
+		print "-- error:", split_error
+		
+		pred_lte = pred <= 500
+		actual_lte = Y_test <= 500
+		pred_gt = ~pred_lte 
+		actual_gt = ~actual_lte 
+		correct = (pred_lte & actual_lte) | (pred_gt & actual_gt)
+		total_weights = np.sum(W_test)
+		accuracy = np.sum(W_test * correct) / total_weights
+
+		sensitivity = np.sum(W_test[actual_lte] * correct[actual_lte]) / np.sum(W_test[actual_lte])
+		specificity = np.sum(W_test[pred_lte] * correct[pred_lte]) / np.sum(W_test[pred_lte])
+
+		print "-- accuracy", accuracy 
+		print "-- sensitivity", sensitivity 
+		print "-- specificity", specificity
+	print "Overall CV error", np.mean(errors)	
+	return np.mean(errors)		
 
 
 
@@ -295,60 +352,12 @@ if __name__ == '__main__':
 
 	if args.generate:
 		X,W,Y = generate_training_data()
-		print "Saving to disk..."
-		np.save("X.npy", X)
-		np.save("W.npy", W)
-		np.save("Y.npy", Y)
+		save_training_data(X, Y, Z)
 
 	if args.fit:
-		
 		if "X" not in locals() or "Y" not in locals() or "W" not in locals():
-			print "Loading X"
-			X = np.load("X.npy")
-			print "Loading Y"
-			Y = np.load("Y.npy")
-			print "Loading W"
-			W = np.load("W.npy")
+			X, Y, W = load_training_data()
 
-		n_samples = len(Y)
-		indices = np.arange(n_samples)
-		np.random.shuffle(indices)
-		X = X[indices]
-		Y = Y[indices]
-		W = W[indices]
-		n_splits = 10
-		split_size = n_samples / n_splits
+		X, Y, W = shuffle(X, Y, W)
 
-
-		def split(data, start, stop):
-			if len(data.shape) == 1:
-				train = np.concatenate([data[:start], data[stop:]])
-			else:
-				train = np.vstack([data[:start], data[stop:]])
-			test = data[start:stop]
-			return train, test 
-		errors = []
-		for split_idx in xrange(n_splits):
-			test_start = split_idx * split_size
-			test_stop = min((split_idx + 1) * split_size, n_samples)
-			print "Split #%d" % (split_idx+1), "n =",  n_samples - (test_stop - test_start)
-			
-			X_train, X_test = split(X, test_start, test_stop)
-
-	
-
-			assert len(X_train.shape) == len(X_test.shape)
-			assert X_train.shape[1] == X_test.shape[1]
-			Y_train, Y_test = split(Y, test_start, test_stop)
-			W_train, W_test = split(W, test_start, test_stop)
-
-			print "-- fitting regression model"
-			model = LogLinearRegression()
-			model.fit(X_train, Y_train, W_train)
-
-			pred = model.predict(X_test)
-			split_error = np.sum(np.abs(pred-Y_test) * W_test) / np.sum(W_test)
-			errors.append(split_error)
-			print "-- error:", split_error
-			print "-- accuracy", np.sum(W_test * (((pred < 500) & (Y_test < 500)) | ((pred >= 500 ) & (Y_test >= 500)))) / np.sum(W_test)
-		print "Overall CV error", np.mean(errors)			
+		cross_validation(X,Y,W)
