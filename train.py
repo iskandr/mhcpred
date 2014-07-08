@@ -49,57 +49,36 @@ def encode_inputs(X_pair_indices, pairwise_feature_vec):
 		Maps from AA pair indices to continuous values 
 	""" 
 	n_samples, n_dims = X_pair_indices.shape 
-
-	assert len(pairwise_feature_vec) == (20*20)
+	n_pairwise_features = len(pairwise_feature_vec)
+	assert n_pairwise_features == (20*20)
 	X_encoded = np.zeros((n_samples, n_dims), dtype=float)
 	for row_idx, x in enumerate(X_pair_indices):
 		for col_idx, xi in enumerate(x):
-			X[row_idx, col_idx] = pairwise_feature_vec[xi]
+			X_encoded[row_idx, col_idx] = pairwise_feature_vec[xi]
 	return X_encoded
 
 
-def encode_pairwise_coefficients(peptide_seqs, mhc_seqs, model_weights):
-	"""
-	Re-encode sequences into a 20x20 AA pairwise feature matirx relative to some linear model model_weights
-	"""
-	assert all(len(s) == 9 for s in peptide_seqs)
-	assert len(peptide_seqs) == len(mhc_seqs), "%d != %d" % (len(peptide_seqs), len(mhc_seqs))
-	n_mhc_letters = len(mhc_seqs[0])
-	assert all(len(s) == n_mhc_letters for s in mhc_seqs)
-	assert len(model_weights) == (9 * n_mhc_letters), "model len %d != %d" % (len(model_weights), (9 * n_mhc_letters))
-	
+def encode_pairwise_coefficients(X_idx, model_weights):
 
-	n_dims = 20 * 20
-	n_samples = len(peptide_seqs)
-	coeffs = np.zeros((n_samples, n_dims), dtype=float)
-	counts = Counter()
-	for row_idx, peptide_seq in enumerate(peptide_seqs):
-		allele_seq = mhc_seqs[row_idx]
-		for i, peptide_letter in enumerate(peptide_seq):
-			for j, mhc_letter in enumerate(allele_seq):
-				key = "%s%s" % (peptide_letter, mhc_letter)
-				counts[key] += 1
-				col_idx = AMINO_ACID_PAIR_POSITIONS[key]
-				weight_idx = i * 9 + j
-				coeffs[row_idx, col_idx] += model_weights[weight_idx]
-	print counts 
-	assert False
+	n_samples, n_position_pairs = X_idx.shape 
+	n_amino_acid_pairs = 20 * 20
+
+	assert len(model_weights) == n_position_pairs
+	assert (X_idx.max() < n_amino_acid_pairs), (X_idx.max(), n_amino_acid_pairs)
+	
+	coeffs = np.zeros((n_samples, n_amino_acid_pairs), dtype=float)
+	for row_idx, x in enumerate(X_idx):
+		for col_idx, xi  in enumerate(x):
+			coeffs[row_idx, xi] += model_weights[col_idx]
 	return coeffs
 
-def estimate_pairwise_features(peptide_seqs, mhc_seqs, model_weights, Y):
-	C = encode_pairwise_coefficients(peptide_seqs, mhc_seqs, model_weights)
-	print C[0:10]
-	print "Solving linear system..."
-	feature_weights, _, _, _ = np.linalg.lstsq(C, Y)
-	feature_dict = {}
-	n_mhc_letters = mhc_seqs[0]
-	for idx, v in enumerate(feature_weights):
-		i = idx % 20
-		j = idx / 20
-		key = "%s%s" % (AMINO_ACID_LETTERS[i], AMINO_ACID_LETTERS[j])
-		feature_dict[key] = v 
-	return feature_dict
-
+def estimate_pairwise_features(X_idx, model_weights, Y):
+	Y = np.log(Y) #np.minimum(1.0, np.maximum(0.0, 1.0 - np.log(Y)/ np.log(50000)))
+	C = encode_pairwise_coefficients(X_idx, model_weights)
+	print "--- Fitting model for pairwise features..."
+	model = sklearn.linear_model.Ridge()
+	model.fit(C, Y)
+	return model.coef_
 
 def generate_training_data(binding_data_filename = "mhc1.csv", mhc_seq_filename = "MHC_aa_seqs.csv"):
 	df_peptides = pd.read_csv(binding_data_filename).reset_index()
@@ -165,10 +144,11 @@ def generate_training_data(binding_data_filename = "mhc1.csv", mhc_seq_filename 
 		if allele in mhc_seqs_dict:
 			allele_seq = mhc_seqs_dict[allele]
 			peptide = peptide_seqs[peptide_idx]
-			n_letters = len(peptide)
+			n_peptide_letters = len(peptide)
+			n_mhc_letters = len(allele_seq)
 			ic50 = peptide_ic50[peptide_idx]
 			print peptide_idx, allele, peptide, allele_seq, ic50
-			for start_pos in xrange(0, n_letters - 8):
+			for start_pos in xrange(0, n_peptide_letters - 8):
 				stop_pos = start_pos + 9
 				vec = [AMINO_ACID_PAIR_POSITIONS[peptide_letter + mhc_letter] 
 				       for peptide_letter in peptide[start_pos:stop_pos]
@@ -200,16 +180,15 @@ class LogLinearRegression(sklearn.linear_model.LinearRegression):
 		#return 50000 ** logY
 		return np.exp(transformed_Y)
 
-
 class TwoPassRegressor(object):
 
 	def __init__(self, classifier_threshold = 10**3):
 		self.classifier_threshold = classifier_threshold
-		
+	
+
 	def fit(self,X,Y,W=None):
 
 		categories =  np.maximum(0, (np.log10(Y) / np.log10(50)).astype('int')) #Y <= self.classifier_threshold #
-		print np.unique(categories)
 		self.first_pass = sklearn.ensemble.RandomForestClassifier() #sklearn.linear_model.LogisticRegression()
 		self.first_pass.fit(X,categories)
 		
@@ -235,18 +214,6 @@ class TwoPassRegressor(object):
 		return np.exp(combined) 
 
 
-"""
-class Regressor(object):
-	def __init__(self, initial_coefficients = None):
-		if initial_coefficients is None:
-			self.pairwise_features = pmbec.read_coefficients()
-		else:
-			self.pairwise_features = initial_coefficients 
-
-	def fit(self, X, Y, sample_weight = None):
-
-	def predict(self, X):
-"""
 def split(data, start, stop):
 	if len(data.shape) == 1:
 		train = np.concatenate([data[:start], data[stop:]])
@@ -282,11 +249,19 @@ def save_training_data(X, Y, W):
 	np.save("W.npy", W)
 	np.save("Y.npy", Y)
 
-def cross_validation(X, Y, W, n_splits = 10):
-
-	coeff = pmbec.read_coefficients()
-	coeff_vec = feature_dictionary_to_vector(coeff)
-	X = encode_inputs(X, coeff_vec)
+def cross_validation(X_idx, Y, W, n_splits = 10):
+	"""
+	X_idx : 2-dimensional array of integers with shape = (n_samples, n_features) 
+		Elements are indirect references to elements of the feature encoding matrix
+	
+	Y : 1-dimensional array of floats with shape = (n_samples,)
+		target IC50 values
+	
+	W : 1-dimensional array of floats with shape = (n_samples,)
+		sample weights 
+	
+	n_splits : int
+	"""
 
 	n_samples = len(Y)
 	split_size = n_samples / n_splits
@@ -295,44 +270,66 @@ def cross_validation(X, Y, W, n_splits = 10):
 	accuracies = []
 	sensitivities = []
 	specificities = []
+	pmbec_coeff = pmbec.read_coefficients()
+	pmbec_coeff_vec = feature_dictionary_to_vector(pmbec_coeff)
+
+	
 	for split_idx in xrange(n_splits):
+		coeff_vec = pmbec_coeff_vec
 		test_start = split_idx * split_size
 		test_stop = min((split_idx + 1) * split_size, n_samples)
-		print "Split #%d" % (split_idx+1), "n =",  n_samples - (test_stop - test_start)
 		
-		X_train, X_test = split(X, test_start, test_stop)
-
-
-
-		assert len(X_train.shape) == len(X_test.shape)
-		assert X_train.shape[1] == X_test.shape[1]
+		print "Split #%d" % (split_idx+1), "n =",  n_samples - (test_stop - test_start)
+		X_train_idx, X_test_idx = split(X_idx, test_start, test_stop)
+		assert len(X_train_idx.shape) == len(X_test_idx.shape)
+		assert X_train_idx.shape[1] == X_test_idx.shape[1]
 		Y_train, Y_test = split(Y, test_start, test_stop)
 		W_train, W_test = split(W, test_start, test_stop)
-
-		print "-- fitting regression model"
-		model = LogLinearRegression()
-		model.fit(X_train, Y_train, W_train)
-
-		pred = model.predict(X_test)
-		split_error = np.sum(np.abs(pred-Y_test) * W_test) / np.sum(W_test)
-		errors.append(split_error)
-
-		print "-- error:", split_error
+		print "Training baseline accuracy", max(np.mean(Y_train <= 500), 1 - np.mean(Y_train <= 500))
 		
-		pred_lte = pred <= 500
-		actual_lte = Y_test <= 500
-		pred_gt = ~pred_lte 
-		actual_gt = ~actual_lte 
-		correct = (pred_lte & actual_lte) | (pred_gt & actual_gt)
-		total_weights = np.sum(W_test)
-		accuracy = np.sum(W_test * correct) / total_weights
+		model = sklearn.linear_model.RidgeCV() #LogLinearRegression()
+		
+		n_iters = 5
+		for i in xrange(n_iters):
+			X_train = encode_inputs(X_train_idx, coeff_vec)
+			X_test = encode_inputs(X_test_idx, coeff_vec)
 
-		sensitivity = np.sum(W_test[actual_lte] * correct[actual_lte]) / np.sum(W_test[actual_lte])
-		specificity = np.sum(W_test[pred_lte] * correct[pred_lte]) / np.sum(W_test[pred_lte])
+			print 
+			print "- fitting regression model #%d" % i 
+			print "--- coeff", coeff_vec[0:10]
+			
+			model.fit(X_train, Y_train, W_train)
 
-		print "-- accuracy", accuracy 
-		print "-- sensitivity", sensitivity 
-		print "-- specificity", specificity
+			pred = model.predict(X_test)
+			
+			pred_lte = pred <= 500
+			actual_lte = Y_test <= 500
+			pred_gt = ~pred_lte 
+			actual_gt = ~actual_lte 
+			correct = (pred_lte & actual_lte) | (pred_gt & actual_gt)
+			total_weights = np.sum(W_test)
+			accuracy = np.sum(W_test * correct) / total_weights
+
+			sensitivity = np.sum(W_test[actual_lte] * correct[actual_lte]) / np.sum(W_test[actual_lte])
+			specificity = np.sum(W_test[pred_lte] * correct[pred_lte]) / np.sum(W_test[pred_lte])
+
+			split_error = np.sum(np.abs(pred-Y_test) * W_test) / np.sum(W_test)
+						
+			print "--- error:", split_error
+
+			print "--- mean error", np.mean(np.abs(pred-Y_test))
+			
+			print "--- median error", np.median(np.abs(pred-Y_test))
+			print "--- accuracy", accuracy 
+			print "--- sensitivity", sensitivity 
+			print "--- specificity", specificity
+			
+			if i < n_iters - 1:
+				model_weights = model.coef_
+				coeff_vec = estimate_pairwise_features(X_train_idx, model_weights, Y_train)
+
+	errors.append(split_error)
+
 	print "Overall CV error", np.mean(errors)	
 	return np.mean(errors)		
 
@@ -352,7 +349,7 @@ if __name__ == '__main__':
 
 	if args.generate:
 		X,W,Y = generate_training_data()
-		save_training_data(X, Y, Z)
+		save_training_data(X, Y, W)
 
 	if args.fit:
 		if "X" not in locals() or "Y" not in locals() or "W" not in locals():
