@@ -5,7 +5,7 @@ from collections import Counter
 import pmbec 
 from epitopes import amino_acid 
 
-
+from parakeet import jit 
 import sklearn.linear_model
 import sklearn.svm 
 import sklearn.ensemble
@@ -40,7 +40,7 @@ def feature_dictionary_to_vector(dictionary):
 	assert all(vi is not None for vi in vec) 
 	return np.array(vec)
 
-
+@jit 
 def encode_inputs(X_pair_indices, pairwise_feature_vec):
 	"""
 	X_pair_indices : 2d array
@@ -50,22 +50,15 @@ def encode_inputs(X_pair_indices, pairwise_feature_vec):
 	""" 
 	n_samples, n_dims = X_pair_indices.shape 
 	n_pairwise_features = len(pairwise_feature_vec)
-	assert n_pairwise_features == (20*20)
 	X_encoded = np.zeros((n_samples, n_dims), dtype=float)
 	for row_idx, x in enumerate(X_pair_indices):
-		for col_idx, xi in enumerate(x):
-			X_encoded[row_idx, col_idx] = pairwise_feature_vec[xi]
+		X_encoded[row_idx, :] = pairwise_feature_vec[x]
 	return X_encoded
 
-
+@jit 
 def encode_pairwise_coefficients(X_idx, model_weights):
-
 	n_samples, n_position_pairs = X_idx.shape 
 	n_amino_acid_pairs = 20 * 20
-
-	assert len(model_weights) == n_position_pairs
-	assert (X_idx.max() < n_amino_acid_pairs), (X_idx.max(), n_amino_acid_pairs)
-	
 	coeffs = np.zeros((n_samples, n_amino_acid_pairs), dtype=float)
 	for row_idx, x in enumerate(X_idx):
 		for col_idx, xi  in enumerate(x):
@@ -74,11 +67,17 @@ def encode_pairwise_coefficients(X_idx, model_weights):
 
 def estimate_pairwise_features(X_idx, model_weights, Y):
 	Y = np.log(Y) #np.minimum(1.0, np.maximum(0.0, 1.0 - np.log(Y)/ np.log(50000)))
+
+	assert len(model_weights) == X_idx.shape[1]
+	assert (X_idx.max() < 20 * 20), X_idx.max()
+	
 	C = encode_pairwise_coefficients(X_idx, model_weights)
-	print "--- Fitting model for pairwise features..."
+	print "--- Fitting model for pairwise features w/ C.shape = %s, C.mean = %0.4f C.std = %0.4f" % \
+		(C.shape, C.mean(), C.std())
 	model = sklearn.linear_model.Ridge()
 	model.fit(C, Y)
-	return model.coef_
+	features = model.coef_ 
+	return features 
 
 def generate_training_data(binding_data_filename = "mhc1.csv", mhc_seq_filename = "MHC_aa_seqs.csv"):
 	df_peptides = pd.read_csv(binding_data_filename).reset_index()
@@ -106,7 +105,6 @@ def generate_training_data(binding_data_filename = "mhc1.csv", mhc_seq_filename 
 	duplicate_count = grouped_count[grouped_count > 1]
 	print "Found %d duplicate entries in %d groups" % (duplicate_count.sum(), len(duplicate_count))
 	print "Std in each group: %0.4f mean, %0.4f median" % (duplicate_std.mean(), duplicate_std.median())
-	
 	df_peptides = grouped_ic50.median().reset_index()
 
 	# reformat HLA allales 'HLA-A*03:01' into 'HLA-A0301'
@@ -168,17 +166,17 @@ def generate_training_data(binding_data_filename = "mhc1.csv", mhc_seq_filename 
 
 
 
-class LogLinearRegression(sklearn.linear_model.LinearRegression):
+class LogLinearRegression(sklearn.linear_model.Ridge):
 	def fit(self, X, Y, sample_weight = None):
-		#Y = np.minimum(1.0, np.maximum(0.0, 1.0 - np.log(Y)/ np.log(50000)))
+		self._max_value = np.max(Y)
 		Y = np.log(Y)
-		return sklearn.linear_model.LinearRegression.fit(self, X, Y)
+		return sklearn.linear_model.Ridge.fit(self, X, Y)
+
 
 	def predict(self, X):
-		transformed_Y = sklearn.linear_model.LinearRegression.predict(self, X)
-		#logY = -transformed_Y + 1.0
-		#return 50000 ** logY
-		return np.exp(transformed_Y)
+		transformed_Y = sklearn.linear_model.Ridge.predict(self, X)
+		raw_values = np.exp(transformed_Y)
+		return np.minimum(self._max_value, raw_values)
 
 class TwoPassRegressor(object):
 
@@ -249,7 +247,7 @@ def save_training_data(X, Y, W):
 	np.save("W.npy", W)
 	np.save("Y.npy", Y)
 
-def cross_validation(X_idx, Y, W, n_splits = 10):
+def cross_validation(X_idx, Y, W, n_splits = 5):
 	"""
 	X_idx : 2-dimensional array of integers with shape = (n_samples, n_features) 
 		Elements are indirect references to elements of the feature encoding matrix
@@ -287,10 +285,11 @@ def cross_validation(X_idx, Y, W, n_splits = 10):
 		W_train, W_test = split(W, test_start, test_stop)
 		print "Training baseline accuracy", max(np.mean(Y_train <= 500), 1 - np.mean(Y_train <= 500))
 		
-		model = sklearn.linear_model.RidgeCV() #LogLinearRegression()
+		model = LogLinearRegression()
 		
 		n_iters = 5
 		for i in xrange(n_iters):
+			assert len(coeff_vec)== (20*20)
 			X_train = encode_inputs(X_train_idx, coeff_vec)
 			X_test = encode_inputs(X_test_idx, coeff_vec)
 
@@ -317,6 +316,7 @@ def cross_validation(X_idx, Y, W, n_splits = 10):
 						
 			print "--- error:", split_error
 
+			print " -- max error", np.max(np.abs(pred-Y_test))
 			print "--- mean error", np.mean(np.abs(pred-Y_test))
 			
 			print "--- median error", np.median(np.abs(pred-Y_test))
@@ -328,9 +328,15 @@ def cross_validation(X_idx, Y, W, n_splits = 10):
 				model_weights = model.coef_
 				coeff_vec = estimate_pairwise_features(X_train_idx, model_weights, Y_train)
 
-	errors.append(split_error)
+		errors.append(np.median(np.abs(pred-Y_test)))
+		sensitivities.append(sensitivity)
+		specificities.append(specificity)
+		accuracies.append(accuracy)
 
-	print "Overall CV error", np.mean(errors)	
+	print "Overall CV error  =", np.mean(errors)
+	print "Overall CV sensitivity =", np.mean(sensitivities)
+	print "Overall CV specificity =", np.mean(specificities)
+	print "Overall CV accuracy =", np.mean(accuracies)
 	return np.mean(errors)		
 
 
