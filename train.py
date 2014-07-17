@@ -148,12 +148,24 @@ def generate_training_data(binding_data_filename = "mhc1.csv", mhc_seq_filename 
 			print peptide_idx, allele, peptide, allele_seq, ic50
 			for start_pos in xrange(0, n_peptide_letters - 8):
 				stop_pos = start_pos + 9
+				peptide_substring = peptide[start_pos:stop_pos]
 				vec = [AMINO_ACID_PAIR_POSITIONS[peptide_letter + mhc_letter] 
-				       for peptide_letter in peptide[start_pos:stop_pos]
+				       for peptide_letter in peptide_substring
 				       for mhc_letter in allele_seq]
+
+				"""
+				# add interaction terms for neighboring residues on the peptide
+				for i, peptide_letter in enumerate(peptide_substring):
+					if i > 0:
+						before = peptide_substring[i - 1]
+						vec.append(AMINO_ACID_PAIR_POSITIONS[before + peptide_letter])
+					if i < 8:
+						after = peptide_substring[i + 1]
+						vec.append(AMINO_ACID_PAIR_POSITIONS[peptide_letter + after] )
+				"""
 				X.append(np.array(vec))
 				Y.append(ic50)
-				weight = 1.0 / (n_letters - 8)
+				weight = 1.0 / (n_peptide_letters - 8)
 				W.append(weight)
 	X = np.array(X)
 	W = np.array(W)
@@ -180,20 +192,18 @@ class LogLinearRegression(sklearn.linear_model.Ridge):
 
 class TwoPassRegressor(object):
 
-	def __init__(self, classifier_threshold = 10**3):
-		self.classifier_threshold = classifier_threshold
-	
 
 	def fit(self,X,Y,W=None):
-
-		categories =  np.maximum(0, (np.log10(Y) / np.log10(50)).astype('int')) #Y <= self.classifier_threshold #
-		self.first_pass = sklearn.ensemble.RandomForestClassifier() #sklearn.linear_model.LogisticRegression()
-		self.first_pass.fit(X,categories)
+		category_base = 100
+		categories =  np.maximum(0, (np.log10(Y) / np.log10(category_base)).astype('int')) 
+		self.first_pass = sklearn.ensemble.RandomForestClassifier(n_estimators = 20) #sklearn.linear_model.LogisticRegression()
+		self.first_pass.fit(X, categories)
 		
 		Y = np.log(Y)
 		self.regressors = [None] * (np.max(categories) + 1)
 		for category in np.unique(categories):
 			mask = categories == category
+			print "-- Category #%d (base %d): %d samples" % (category, category_base, mask.sum())
 			regressor = sklearn.linear_model.RidgeCV()
 			regressor.fit(X[mask], Y[mask])
 			self.regressors[category] = regressor
@@ -201,14 +211,14 @@ class TwoPassRegressor(object):
 
 
 	def predict(self, X):
-		categories = self.first_pass.predict(X)
+		probs = self.first_pass.predict_proba(X)
+		combined = np.zeros(X.shape[0], dtype=float)
+		weights = np.zeros_like(combined)
 
-		combined = np.zeros_like(categories, dtype=float)
-		
-		for category in np.unique(categories):
-			mask = categories == category
-			pred = self.regressors[category].predict(X[mask])
-			combined[mask] = pred 
+		for category_idx in xrange(probs.shape[1]):
+			pred = self.regressors[category_idx].predict(X)
+			prob = probs[:, category_idx] 
+			combined += prob * pred 
 		return np.exp(combined) 
 
 
@@ -287,18 +297,32 @@ def cross_validation(X_idx, Y, W, n_splits = 5):
 		
 		model = LogLinearRegression()
 		
-		n_iters = 5
+		n_iters = 10
 		for i in xrange(n_iters):
+			print 
+			print "- fitting regression model #%d" % (i + 1)
+			
 			assert len(coeff_vec)== (20*20)
 			X_train = encode_inputs(X_train_idx, coeff_vec)
 			X_test = encode_inputs(X_test_idx, coeff_vec)
-
-			print 
-			print "- fitting regression model #%d" % i 
-			print "--- coeff", coeff_vec[0:10]
 			
-			model.fit(X_train, Y_train, W_train)
+			print "--- X_train shape", X_train.shape 
+			print "--- X_test shape", X_test.shape
+			
+			print "--- coeff first ten entries:", coeff_vec[0:10]
+			print "--- coeff mean", np.mean(coeff_vec), "std", np.std(coeff_vec)
+			
+			last_iter = (i == n_iters - 1)
+			if last_iter:
+				print "Training two-pass regression model"
+				model = TwoPassRegressor()
 
+			model.fit(X_train, Y_train, W_train)
+			
+			if not last_iter:
+				model_weights = model.coef_
+				coeff_vec = estimate_pairwise_features(X_train_idx, model_weights, Y_train)
+			
 			pred = model.predict(X_test)
 			
 			pred_lte = pred <= 500
@@ -324,10 +348,6 @@ def cross_validation(X_idx, Y, W, n_splits = 5):
 			print "--- sensitivity", sensitivity 
 			print "--- specificity", specificity
 			
-			if i < n_iters - 1:
-				model_weights = model.coef_
-				coeff_vec = estimate_pairwise_features(X_train_idx, model_weights, Y_train)
-
 		errors.append(np.median(np.abs(pred-Y_test)))
 		sensitivities.append(sensitivity)
 		specificities.append(specificity)
