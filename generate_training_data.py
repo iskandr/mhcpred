@@ -3,7 +3,10 @@ import numpy as np
 from amino_acids import AMINO_ACID_LETTERS, AMINO_ACID_PAIRS, AMINO_ACID_PAIR_POSITIONS
 
 
-def generate_training_data(binding_data_filename = "mhc1.csv", mhc_seq_filename = "MHC_aa_seqs.csv"):
+def generate_training_data(
+        binding_data_filename = "mhc1.csv", 
+        mhc_seq_filename = "MHC_aa_seqs.csv",
+        neighboring_residue_interactions = False):
     df_peptides = pd.read_csv(binding_data_filename).reset_index()
 
     print "Loaded %d peptides" % len(df_peptides)
@@ -78,16 +81,16 @@ def generate_training_data(binding_data_filename = "mhc1.csv", mhc_seq_filename 
                        for peptide_letter in peptide_substring
                        for mhc_letter in allele_seq]
 
-                """
-                # add interaction terms for neighboring residues on the peptide
-                for i, peptide_letter in enumerate(peptide_substring):
-                    if i > 0:
-                        before = peptide_substring[i - 1]
-                        vec.append(AMINO_ACID_PAIR_POSITIONS[before + peptide_letter])
-                    if i < 8:
-                        after = peptide_substring[i + 1]
-                        vec.append(AMINO_ACID_PAIR_POSITIONS[peptide_letter + after] )
-                """
+                if neighboring_residue_interactions:
+                    # add interaction terms for neighboring residues on the peptide
+                    for i, peptide_letter in enumerate(peptide_substring):
+                        if i > 0:
+                            before = peptide_substring[i - 1]
+                            vec.append(AMINO_ACID_PAIR_POSITIONS[before + peptide_letter])
+                        if i < 8:
+                            after = peptide_substring[i + 1]
+                            vec.append(AMINO_ACID_PAIR_POSITIONS[peptide_letter + after] )
+                    
                 X.append(np.array(vec))
                 Y.append(ic50)
                 weight = 1.0 / (n_peptide_letters - 8)
@@ -103,3 +106,28 @@ def generate_training_data(binding_data_filename = "mhc1.csv", mhc_seq_filename 
     return X, W, Y, alleles
 
 
+
+def save_training_data(X, Y, W, alleles):
+    print "Saving to disk..."
+    np.save("X.npy", X)
+    np.save("W.npy", W)
+    np.save("Y.npy", Y)
+    with open('alleles.txt', 'w') as f:
+        for allele in alleles:
+            f.write(allele)
+            f.write("\n")
+
+if __name__ == '__main__':
+
+    import argparse
+    parser = argparse.ArgumentParser(description='Generate training data for MHC binding prediction')
+    parser.add_argument('--neighboring-residues',  action='store_true', default=False)
+   
+    args = parser.parse_args()
+    
+    print "Commandline Args:"
+    print args
+    print 
+
+    X,W,Y,alleles = generate_training_data(neighboring_residue_interactions = args.neighboring_residues)
+    save_training_data(X, Y, W, alleles)

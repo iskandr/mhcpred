@@ -3,9 +3,11 @@ import numpy as np
 import pandas as pd 
 
 import sklearn.linear_model
+import sklearn.metrics 
+
 from parakeet import jit 
-
-
+from censored_regression import CensoredLasso, CensoredRidge
+        
 
 import pmbec 
 from log_linear_regression import LogLinearRegression
@@ -52,16 +54,28 @@ def encode_pairwise_coefficients(X_idx, model_weights):
             coeffs[row_idx, xi] += model_weights[col_idx]
     return coeffs
 
-def estimate_pairwise_features(X_idx, model_weights, Y):
-    Y = np.log(Y) #np.minimum(1.0, np.maximum(0.0, 1.0 - np.log(Y)/ np.log(50000)))
+def estimate_pairwise_features(X_idx, model_weights, Y, censor_cutoff = 2000):
+    """
+    Estimators:
+    - ridge : Ridge Regression for all IC50 values
+
+    - ...otherwise: minimize L1 norm s.t. IC50 <= 2000nM have exact same values, non-binders have predict IC50 > 2000nM
+
+    cutoff : float 
+        Binding affinity below which we want exact match of predicted values 
+    """
+    Y = np.log(Y) 
 
     assert len(model_weights) == X_idx.shape[1]
     assert (X_idx.max() < 20 * 20), X_idx.max()
     C = encode_pairwise_coefficients(X_idx, model_weights)
-    model = sklearn.linear_model.Ridge()
-    model.fit(C, Y)
-    features = model.coef_ 
-    return features 
+    
+    model = CensoredLasso(regularization_weight = 0.001, verbose = False)
+    log_cutoff = np.log(censor_cutoff)
+    nonbinders = Y > log_cutoff
+    Y[nonbinders] = log_cutoff
+    model.fit(C,Y,nonbinders)
+    return model.coef_
 
 def split(data, start, stop):
     """
@@ -75,7 +89,7 @@ def split(data, start, stop):
     test = data[start:stop]
     return train, test 
 
-def leave_one_out(X_idx, Y, W, alleles, cutoff = 500, n_iters = 25):
+def leave_one_out(X_idx, Y, W, alleles, binding_cutoff = 500, censor_cutoff = 10000, n_iters = 15):
     """
     X_idx : 2-dimensional array of integers with shape = (n_samples, n_features) 
         Elements are indirect references to elements of the feature encoding matrix
@@ -109,6 +123,7 @@ def leave_one_out(X_idx, Y, W, alleles, cutoff = 500, n_iters = 25):
 
     for allele in sorted(unique_alleles):
         print ">>>", allele 
+
         coeff_vec = pmbec_coeff_vec
 
         allele_mask = [x == allele for x in alleles]
@@ -122,18 +137,27 @@ def leave_one_out(X_idx, Y, W, alleles, cutoff = 500, n_iters = 25):
         W_train = W[mask]
         W_test = W[~mask]
 
-        print "Training baseline accuracy", max(np.mean(Y_train <= cutoff), 1 - np.mean(Y_train <= cutoff))
+        if (Y_train <= binding_cutoff).std() == 0 or (Y_test <= binding_cutoff).std() == 0:
+            print "Skipping %s" % allele
+            continue 
+        print "Training baseline accuracy", \
+            max(np.mean(Y_train <= binding_cutoff), 
+                1 - np.mean(Y_train <= binding_cutoff))
         
-        model = LogLinearRegression()
-        
-            
-           
+        #model = LogLinearRegression()
+        mask = Y_train >= censor_cutoff
+        log_Y_train = np.log(Y_train)
+        model = CensoredLasso(regularization_weight = 0.1, verbose = False)
+        log_Y_train_censored = log_Y_train.copy()
+        log_Y_train_censored[mask] = np.log(censor_cutoff)
+
         for i in xrange(n_iters):
             print 
             print "- fitting regression model #%d (%s)" % ((i + 1), allele)
             
             assert len(coeff_vec)== (20*20)
             X_train = encode_inputs(X_train_idx, coeff_vec)
+
             X_test = encode_inputs(X_test_idx, coeff_vec)
             
             if i == 0:
@@ -143,31 +167,34 @@ def leave_one_out(X_idx, Y, W, alleles, cutoff = 500, n_iters = 25):
             print "--- coeff mean", np.mean(coeff_vec), "std", np.std(coeff_vec)
             
             last_iter = (i == n_iters - 1)
-            if last_iter:
-                print "Training two-pass regression model"
-                model = SelectiveRegressor()
+            
+            #if last_iter:
+            #    model = SelectiveRegressor(cutoff = np.log(censor_cutoff))
 
-            model.fit(X_train, Y_train, W_train)
+            model.fit(X_train, log_Y_train_censored, mask)
             
             if last_iter:
-                mask, pred = model.predict(X_test)
-                print "Made predictions for: %d/%d" % (mask.sum(), len(mask))
-                pred_lte = np.zeros(len(Y_test), dtype=bool)
-                pred_lte[mask] = (pred <= cutoff)
 
-                max_error = np.max(np.abs(pred-Y_test[mask]))
-                median_error = np.median(np.abs(pred-Y_test[mask]))
+                log_pred = model.predict(X_test)
+                pred = np.exp(log_pred)
+                mask = pred <= censor_cutoff
+                print "Made predictions for: %d/%d" % (mask.sum(), len(mask))
+                pred_lte = pred <= binding_cutoff
+                max_error = np.max(np.abs(pred[mask]-Y_test[mask]))
+                median_error = np.median(np.abs(pred[mask]-Y_test[mask]))
             else:
                 model_weights = model.coef_
-                coeff_vec = estimate_pairwise_features(X_train_idx, model_weights, Y_train)
+                print "Min weight abs:", np.abs(model_weights).min()
+                print "Sparsity: %d / %d" % (np.sum(np.abs(model_weights) < 10.0 ** -5), len(model_weights))
+                coeff_vec = estimate_pairwise_features(X_train_idx, model_weights, Y_train, censor_cutoff = censor_cutoff)
             
-                pred = model.predict(X_test)
+                pred = np.exp(model.predict(X_test))
                 
-                pred_lte = pred <= cutoff
+                pred_lte = pred <= binding_cutoff
                 max_error = np.max(np.abs(pred-Y_test))
                 median_error = np.median(np.abs(pred-Y_test))
             
-            actual_lte = Y_test <= cutoff
+            actual_lte = Y_test <= binding_cutoff
             pred_gt = ~pred_lte 
             actual_gt = ~actual_lte 
             correct = (pred_lte & actual_lte) | (pred_gt & actual_gt)
@@ -175,13 +202,14 @@ def leave_one_out(X_idx, Y, W, alleles, cutoff = 500, n_iters = 25):
 
             sensitivity = np.mean(pred_lte[actual_lte])
             specificity = np.mean(actual_lte[pred_lte])
-
+            auc = sklearn.metrics.roc_auc_score(actual_lte, -pred)
             print " -- max error", max_error
             print "--- median error", median_error 
             print "--- accuracy", accuracy 
             print "--- sensitivity", sensitivity 
             print "--- specificity", specificity
-            
+            print "--- AUC", auc 
+
         errors.append(median_error)
         sensitivities.append(sensitivity)
         specificities.append(specificity)
@@ -192,3 +220,5 @@ def leave_one_out(X_idx, Y, W, alleles, cutoff = 500, n_iters = 25):
     print "Overall CV specificity =", np.mean(specificities)
     print "Overall CV accuracy =", np.mean(accuracies)
     return np.mean(errors)      
+
+
