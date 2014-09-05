@@ -8,7 +8,7 @@ alleles = df['MHC Allele']
 # drop missing allele names
 mask = ~alleles.isnull()
 # only count human HLA types 
-mask &= alleles.str.startswith("HLA-")
+mask &= (alleles.str.startswith("HLA-") | alleles.str.startswith("Patr-"))
 # drop 2-digit partial HLA types like HLA-A2 and HLA-DR
 mask &= alleles.str.len() > 7
 
@@ -40,7 +40,7 @@ df_clean = pd.DataFrame({
 	'IC50': df_subset['Quantitative Result'],
 })
 
-type1_mask = df_clean['MHC Allele'].str.contains("HLA-(A|B|C)")
+type1_mask = df_clean['MHC Allele'].str.contains("(HLA|Patr)-(A|B|C)")
 
 df_type1 = df_clean[type1_mask]
 print "# Type 1", len(df_type1)

@@ -6,7 +6,7 @@ import sklearn.linear_model
 
 class SelectiveRegressor(object):
 
-    def __init__(self, cutoff, n_trees = 25):
+    def __init__(self, cutoff, n_trees = 100):
         self.n_trees = n_trees
         self.cutoff = cutoff 
     
@@ -19,7 +19,6 @@ class SelectiveRegressor(object):
         self.regressor = sklearn.ensemble.RandomForestRegressor(n_estimators = self.n_trees)
         self.regressor.fit(X[mask], Y[mask])
         return self
-
 
     def predict(self, X):
         n = len(X)

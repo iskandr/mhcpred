@@ -54,7 +54,10 @@ def encode_pairwise_coefficients(X_idx, model_weights):
             coeffs[row_idx, xi] += model_weights[col_idx]
     return coeffs
 
-def estimate_pairwise_features(X_idx, model_weights, Y, censor_cutoff = 2000):
+def estimate_pairwise_features(X_idx, model_weights, Y, 
+                                censor_cutoff = 2000, 
+                                log_targets = False, 
+                                regularization_weight = 1):
     """
     Estimators:
     - ridge : Ridge Regression for all IC50 values
@@ -64,17 +67,21 @@ def estimate_pairwise_features(X_idx, model_weights, Y, censor_cutoff = 2000):
     cutoff : float 
         Binding affinity below which we want exact match of predicted values 
     """
-    Y = np.log(Y) 
+    if log_targets:
+        Y = np.log(Y) 
+        censor_cutoff = np.log(censor_cutoff)
 
     assert len(model_weights) == X_idx.shape[1]
     assert (X_idx.max() < 20 * 20), X_idx.max()
     C = encode_pairwise_coefficients(X_idx, model_weights)
+
+    model = CensoredLasso(regularization_weight = regularization_weight, verbose = False)
     
-    model = CensoredLasso(regularization_weight = 0.001, verbose = False)
-    log_cutoff = np.log(censor_cutoff)
-    nonbinders = Y > log_cutoff
-    Y[nonbinders] = log_cutoff
+    nonbinders = Y > censor_cutoff
+    Y[nonbinders] = censor_cutoff
     model.fit(C,Y,nonbinders)
+    print "--- AA interaction sparsity: %d / %d" % \
+         ((np.abs(model.coef_) < 10**-6.0).sum(), len(model.coef_))
     return model.coef_
 
 def split(data, start, stop):
@@ -89,7 +96,161 @@ def split(data, start, stop):
     test = data[start:stop]
     return train, test 
 
-def leave_one_out(X_idx, Y, W, alleles, binding_cutoff = 500, censor_cutoff = 10000, n_iters = 15):
+def evaluate_dataset(
+        X_idx, Y, train_mask, allele, 
+        initial_coef, n_iters, 
+        binding_cutoff, censor_cutoff,
+        log_targets = False, 
+        regularization_weight_aa = 1, 
+        regularization_weight_pos = 1):
+
+    coeff_vec = initial_coef
+
+    X_train_idx = X_idx[train_mask]
+    X_test_idx = X_idx[~train_mask]
+    assert X_train_idx.shape[1] == X_test_idx.shape[1]
+    Y_train = Y[train_mask]
+    Y_test = Y[~train_mask]
+   
+
+    print "Training baseline accuracy", \
+        max(np.mean(Y_train <= binding_cutoff), 
+            1 - np.mean(Y_train <= binding_cutoff))
+    
+    mask = Y_train > censor_cutoff
+    Y_train_censored = Y_train.copy()
+    Y_train_censored[mask] = censor_cutoff
+    log_Y_train = np.log(Y_train)
+    log_Y_train_censored = np.log(Y_train_censored)
+
+    model = \
+        CensoredLasso(
+            regularization_weight = regularization_weight_pos, 
+            verbose = False)
+    
+    for i in xrange(n_iters):
+        print 
+        print "- fitting regression model #%d (%s)" % ((i + 1), allele)
+        
+        assert len(coeff_vec)== (20*20)
+        X_train = encode_inputs(X_train_idx, coeff_vec)
+
+        X_test = encode_inputs(X_test_idx, coeff_vec)
+        
+        if i == 0:
+            print "--- X_train shape", X_train.shape 
+            print "--- X_test shape", X_test.shape
+     
+        print "--- coeff mean", np.mean(coeff_vec), "std", np.std(coeff_vec)
+        
+        last_iter = (i == n_iters - 1)
+        
+        if log_targets:
+            model.fit(X_train, log_Y_train_censored, mask)
+        else:
+            model.fit(X_train, Y_train_censored, mask)
+
+        pred = model.predict(X_test)
+        if log_targets:
+            pred = np.exp(pred)
+
+        if not last_iter:
+            model_weights = model.coef_
+            print "--- Positional min weight abs:",\
+                 np.abs(model_weights).min()
+            print "--- Positional sparsity: %d / %d" % \
+                (np.sum(np.abs(model_weights) < 10.0 ** -6), len(model_weights))
+            coeff_vec = \
+                estimate_pairwise_features(
+                    X_train_idx, model_weights, Y_train, 
+                    censor_cutoff = censor_cutoff, 
+                    regularization_weight = regularization_weight_aa)
+        
+        pred_lte = pred <= binding_cutoff
+        median_error = np.median(np.abs(pred-Y_test))
+        actual_lte = Y_test <= binding_cutoff
+        pred_gt = ~pred_lte 
+        actual_gt = ~actual_lte 
+        correct = (pred_lte & actual_lte) | (pred_gt & actual_gt)
+        accuracy = np.mean(correct)
+
+        sensitivity = np.mean(pred_lte[actual_lte])
+        specificity = np.mean(actual_lte[pred_lte])
+        auc = sklearn.metrics.roc_auc_score(actual_lte, 1.0 / pred)
+        print "--- %d binders of %d identified" % ((correct & pred_lte).sum(), actual_lte.sum())
+        print "--- median error", median_error 
+        print "--- accuracy", accuracy 
+        print "--- sensitivity", sensitivity 
+        print "--- specificity", specificity
+        print "--- AUC", auc 
+    return accuracy, auc, sensitivity, specificity
+
+
+def find_best_regularization_weights(
+        X, Y, censor_cutoff, initial_coef, 
+        candidate_weights, 
+        binding_cutoff = 500, 
+        n = 2000, 
+        n_iters = 4):
+    n = min(n, len(X) / 2)
+    indices = np.arange(len(X))
+    train_idx = indices[:n]
+    test_idx = indices[n:2*n]
+    X_train_indirect = X[train_idx]
+    X_test_indirect = X[test_idx]
+    Y_train = Y[train_idx]
+    Y_test = Y[test_idx]
+    X_train_init = encode_inputs(X_train_indirect, initial_coef)
+    C_train = Y_train > censor_cutoff
+    Y_train[C_train] = censor_cutoff
+    best_w_pos= None 
+    best_w_aa = None
+    best_auc = 0
+    print "Testing for best regularization_weight: "
+    for w_pos in candidate_weights:
+        for w_aa in candidate_weights:
+
+            pos_regression = CensoredLasso(regularization_weight = w_pos)
+            aa_regression = CensoredLasso(regularization_weight = w_aa)
+            X_train = X_train_init
+            for i in xrange(n_iters):
+                pos_regression.fit(X_train, Y_train, C_train)
+                if i < n_iters - 1:
+                    X_train_pairwise = \
+                        encode_pairwise_coefficients(
+                        X_train_indirect, 
+                        pos_regression.coef_)
+
+
+                    aa_regression.fit(X_train_pairwise, Y_train, C_train)
+                    X_train = \
+                        encode_inputs(
+                            X_train_indirect, aa_regression.coef_)
+            X_test = encode_inputs(X_train_indirect, aa_regression.coef_)
+            pred = pos_regression.predict(X_test)
+            print (Y_test <= binding_cutoff).mean(), (pred <= binding_cutoff).mean()
+            
+            auc = sklearn.metrics.roc_auc_score(
+                Y_test <= binding_cutoff, -pred)
+            print "aa = %f, pos = %f, auc = %f" % (w_aa, w_pos, auc)
+            if auc > best_auc:
+                best_auc = auc 
+                best_w_aa = w_aa
+                best_w_pos = w_pos 
+        
+    print "Best AUC %f w_aa %f w_pos" % (best_auc, w_aa, w_pos)
+    return w_aa, w_pos 
+
+
+
+
+def leave_one_out(X_idx, Y, W, alleles, 
+                  binding_cutoff = 500, 
+                  censor_cutoff = 2000, 
+                  n_iters = 10,
+                  log_targets = False, 
+                  regularization_weights = \
+                    [5, 1, 0.5, .1, .05, .01, .001, 0]):
     """
     X_idx : 2-dimensional array of integers with shape = (n_samples, n_features) 
         Elements are indirect references to elements of the feature encoding matrix
@@ -111,114 +272,54 @@ def leave_one_out(X_idx, Y, W, alleles, binding_cutoff = 500, censor_cutoff = 10
 
     n_samples = len(Y)
     
-    errors = []
     accuracies = []
     sensitivities = []
     specificities = []
+
     pmbec_coeff = pmbec.read_coefficients()
     pmbec_coeff_vec = feature_dictionary_to_vector(pmbec_coeff)
 
     
     unique_alleles = set(alleles)
 
-    for allele in sorted(unique_alleles):
-        print ">>>", allele 
+    results = {}
 
-        coeff_vec = pmbec_coeff_vec
-
-        allele_mask = [x == allele for x in alleles]
-        mask = ~np.array(allele_mask)
-
-        X_train_idx = X_idx[mask]
-        X_test_idx = X_idx[~mask]
-        assert X_train_idx.shape[1] == X_test_idx.shape[1]
-        Y_train = Y[mask]
-        Y_test = Y[~mask]
-        W_train = W[mask]
-        W_test = W[~mask]
-
-        if (Y_train <= binding_cutoff).std() == 0 or (Y_test <= binding_cutoff).std() == 0:
-            print "Skipping %s" % allele
-            continue 
-        print "Training baseline accuracy", \
-            max(np.mean(Y_train <= binding_cutoff), 
-                1 - np.mean(Y_train <= binding_cutoff))
-        
-        #model = LogLinearRegression()
-        mask = Y_train >= censor_cutoff
-        log_Y_train = np.log(Y_train)
-        model = CensoredLasso(regularization_weight = 0.1, verbose = False)
-        log_Y_train_censored = log_Y_train.copy()
-        log_Y_train_censored[mask] = np.log(censor_cutoff)
-
-        for i in xrange(n_iters):
+    try:
+        for allele in sorted(unique_alleles):
             print 
-            print "- fitting regression model #%d (%s)" % ((i + 1), allele)
-            
-            assert len(coeff_vec)== (20*20)
-            X_train = encode_inputs(X_train_idx, coeff_vec)
+            print ">>>", allele 
 
-            X_test = encode_inputs(X_test_idx, coeff_vec)
-            
-            if i == 0:
-                print "--- X_train shape", X_train.shape 
-                print "--- X_test shape", X_test.shape
-         
-            print "--- coeff mean", np.mean(coeff_vec), "std", np.std(coeff_vec)
-            
-            last_iter = (i == n_iters - 1)
-            
-            #if last_iter:
-            #    model = SelectiveRegressor(cutoff = np.log(censor_cutoff))
+            mask = ~np.array([x == allele for x in alleles])
+            if (Y[mask] <= binding_cutoff).std() == 0 or \
+                    (Y[~mask] <= binding_cutoff).std() == 0:
+                print "Skipping %s" % allele
+                continue 
+            regularization_weight_aa, regularization_weight_pos = \
+                find_best_regularization_weights(
+                    X_idx[mask], Y[mask], 
+                    censor_cutoff, pmbec_coeff_vec, 
+                    regularization_weights) 
+        
+            accuracy, auc, sensitivity, specificity = \
+                evaluate_dataset(
+                    X_idx, Y, mask, allele, 
+                    pmbec_coeff_vec, n_iters, 
+                    binding_cutoff, censor_cutoff,
+                    log_targets,
+                    regularization_weight_aa, regularization_weight_pos)
 
-            model.fit(X_train, log_Y_train_censored, mask)
-            
-            if last_iter:
+            sensitivities.append(sensitivity)
+            specificities.append(specificity)
+            accuracies.append(accuracy)
+            results[allele] = (accuracy, auc)
+    except KeyboardInterrupt:
+        print "Results:"
+        for allele in sorted(results.keys()):
+            (pcc, auc) = results[allele]
+            print "%s PCC %0.5f AUC %0.5f" % (allele, pcc, auc)
 
-                log_pred = model.predict(X_test)
-                pred = np.exp(log_pred)
-                mask = pred <= censor_cutoff
-                print "Made predictions for: %d/%d" % (mask.sum(), len(mask))
-                pred_lte = pred <= binding_cutoff
-                max_error = np.max(np.abs(pred[mask]-Y_test[mask]))
-                median_error = np.median(np.abs(pred[mask]-Y_test[mask]))
-            else:
-                model_weights = model.coef_
-                print "Min weight abs:", np.abs(model_weights).min()
-                print "Sparsity: %d / %d" % (np.sum(np.abs(model_weights) < 10.0 ** -5), len(model_weights))
-                coeff_vec = estimate_pairwise_features(X_train_idx, model_weights, Y_train, censor_cutoff = censor_cutoff)
-            
-                pred = np.exp(model.predict(X_test))
-                
-                pred_lte = pred <= binding_cutoff
-                max_error = np.max(np.abs(pred-Y_test))
-                median_error = np.median(np.abs(pred-Y_test))
-            
-            actual_lte = Y_test <= binding_cutoff
-            pred_gt = ~pred_lte 
-            actual_gt = ~actual_lte 
-            correct = (pred_lte & actual_lte) | (pred_gt & actual_gt)
-            accuracy = np.mean(correct)
-
-            sensitivity = np.mean(pred_lte[actual_lte])
-            specificity = np.mean(actual_lte[pred_lte])
-            auc = sklearn.metrics.roc_auc_score(actual_lte, -pred)
-            print " -- max error", max_error
-            print "--- median error", median_error 
-            print "--- accuracy", accuracy 
-            print "--- sensitivity", sensitivity 
-            print "--- specificity", specificity
-            print "--- AUC", auc 
-
-        errors.append(median_error)
-        sensitivities.append(sensitivity)
-        specificities.append(specificity)
-        accuracies.append(accuracy)
-
-    print "Overall CV error  =", np.mean(errors)
     print "Overall CV sensitivity =", np.mean(sensitivities)
     print "Overall CV specificity =", np.mean(specificities)
     print "Overall CV accuracy =", np.mean(accuracies)
-    return np.mean(errors)      
-
+        
 

@@ -8,7 +8,7 @@ with open('netmhcpan_pseudo_mhc.txt', 'r') as f:
 		assert len(parts) <= 2
 		if len(parts) == 2:
 			allele, seq = parts
-			if allele.startswith('HLA'):
+			if allele.startswith('HLA') or allele.startswith("Patr"):
 				strings.append(seq)
 				alleles.append(allele)
 
@@ -23,7 +23,7 @@ for i, c in enumerate(first):
 		total += 1
 	fraction =  float(count)/total
 	print i, c, count, "/", total, fraction 
-	if fraction > 0.9:
+	if fraction > 0.95:
 		print "-- Skipping position %d" % i 
 		keep_position[i] = False 
 
