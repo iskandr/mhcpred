@@ -1,118 +1,52 @@
+from collections import OrderedDict
+
 import pandas as pd 
 import numpy as np 
 from amino_acids import AMINO_ACID_LETTERS, AMINO_ACID_PAIRS, AMINO_ACID_PAIR_POSITIONS
-
 
 from os.path import exists 
 import subprocess
 import pandas as pd
 import logging 
 
-
-IEDB_FILENAME = "mhc_ligand_full.csv"
-IEDB_URL = "http://www.iedb.org/doc/mhc_ligand_full.zip"
-
-def download_iedb_database(filename, url):
-    if not exists(filename):
-        subprocess.check_call(["wget", url])
-        zipped_name = url.split("/")[-1]
-        subprocess.check_call(["unzip", zipped_name])
-    return pd.read_csv(filename, error_bad_lines=False, header=[0,1])
-    
-
-def load_iedb(filename, url, only_human = False):
-
-    df = download_iedb_database(filename, url)
-    
-    print "IEDB contains %d entries" % len(df)
-
-    epitopes = df['Epitope']['Description'].str.upper().str.strip()
-    # make sure there is an epitope string and it's at least a 5mer
-    mask = ~epitopes.isnull()
-    mask &= epitopes.str.len() >= 5 
-    
-    # must contain only the 20 canonical amino acid letters
-    mask = ~epitopes.str.contains("X|B|Z")
-    # drop epitopes with special characters
-    mask &= ~epitopes.str.contains('\(|\)|\+')
-
-    print "Dropped %d invalid epitope strings" % (len(mask) - mask.sum())
-
-    alleles = df['MHC']['Allele Name']
-    
-    # drop missing allele names
-    mask &= ~alleles.isnull()
-    # drop 2-digit partial HLA types like HLA-A2 and HLA-DR
-    mask &= alleles.str.len() > 7
-    
-
-
-    if only_human:
-        # only count human HLA types 
-        mask &= alleles.str.startswith("HLA-") 
-  
-    epitope_type = df['Epitope']['Object Type']
-
-    mask &=  epitope_type == 'Linear peptide'
-    
-    df = df[mask]
-    epitopes = epitopes[mask]
-
-    mhc_class =  df['MHC']['MHC allele class']
-    categories = df['Assay'][['Qualitative Measure']]
-    binding_scores = df['Assay']['Quantitative measurement']
-    assay_units = df['Assay']['Units']
-    assay_method = df['Assay']['Method/Technique']
-    paper = df['Reference']['Title']
-
-    df_clean = pd.DataFrame({})
-    df_clean['Epitope'] = epitopes
-    df_clean['MHC Allele'] = alleles 
-    df_clean['MHC Class'] = mhc_class
-    df_clean['IC50'] =  binding_scores
-    df_clean['Assay Units'] = assay_units
-    df_clean['Assay Method'] = assay_method
-    df_clean['Binder'] = categories
-    df_clean['Paper'] = paper 
-
-    print "Final DataFrame with %d entries" % len(df_clean)
-    return df_clean
-
-    
+        
 def generate_training_data(
         df_peptides,
         df_mhc, 
         neighboring_residue_interactions = False,
+        mhc_class = "I",
         length = 9):
 
+    df_peptides['MHC Allele'] = \
+        df_peptides['MHC Allele'].str.replace('*', '').str.strip()
     
-    print "Loaded %d peptides" % len(df_peptides)
+    if length:
+        df_peptides = df_peptides[df_peptides.Epitope.str.len() == 9]
+    
+    if mhc_class:
+        df_peptides = df_peptides[df_peptides['MHC Class'] == mhc_class]
+    
+    has_ic50 = df_peptides["IC50_Count"] > 0
+    ic50_in_range = df_peptides["IC50_Median"] < 10**7
+    ic50_mask = has_ic50 & ic50_in_range
 
-    df_peptides['MHC Allele'] = df_peptides['MHC Allele'].str.replace('*', '').str.strip()
-    df_peptides['Epitope']  = df_peptides['Epitope'].str.strip().str.upper()
+    print "Keeping %d entries for IC50 data" % ic50_mask.sum()
 
-    print "Peptide lengths"
-    print df_peptides['Epitope'].str.len().value_counts()
+    pos_count = (df_peptides["Positive"] + df_peptides["Positive-High"]) 
+    pos_count += 0.5 * df_peptides["Positive-Intermediate"]
+    pos_count += 0.25 * df_peptides["Positive-Low"]
+    
+    neg_count = df_peptides["Negative"]
 
+    diff = (pos_count - neg_count)
+    pos_mask = diff >= 1
+    neg_mask = diff <= -1
 
-    mask = df_peptides['Epitope'].str.len() == length
-    mask &= df_peptides['MHC Class'] == 'I'
-    mask &= ~df_peptides['IC50'].isnull()
-    mask &= df_peptides['IC50'] <= 10**6
-    df_peptides = df_peptides[mask]
-    print "Keeping %d peptides (length >= 9)" % len(df_peptides)
+    category_mask = pos_mask | neg_mask
+    print "Keeping %d entries for categorical data" % category_mask.sum()
+    category = np.sign(diff)
 
-
-    groups = df_peptides.groupby(['MHC Allele', 'Epitope'])
-
-    grouped_ic50 = groups['IC50']
-    grouped_std = grouped_ic50.std() 
-    grouped_count = grouped_ic50.count() 
-    duplicate_std = grouped_std[grouped_count > 1]
-    duplicate_count = grouped_count[grouped_count > 1]
-    print "Found %d duplicate entries in %d groups" % (duplicate_count.sum(), len(duplicate_count))
-    print "Std in each group: %0.4f mean, %0.4f median" % (duplicate_std.mean(), duplicate_std.median())
-    df_peptides = grouped_ic50.median().reset_index()
+    assert False
 
     # reformat HLA allales 'HLA-A*03:01' into 'HLA-A03:01'
     peptide_alleles = df_peptides['MHC Allele']
@@ -129,9 +63,14 @@ def generate_training_data(
     assert len(mhc_seqs) == len(df_mhc)
 
     print list(sorted(peptide_alleles.unique()))
-    print mhc_alleles[:20]
-    print "%d common alleles" % len(set(mhc_alleles).intersection(set(peptide_alleles.unique())))
-    print "Missing allele sequences for %s" % set(peptide_alleles.unique()).difference(set(mhc_alleles))
+    logging.info(
+        "%d common alleles",
+        len(set(mhc_alleles).intersection(set(peptide_alleles.unique())))
+    )
+    logging.info(
+        "Missing allele sequences for %s", 
+        set(peptide_alleles.unique()).difference(set(mhc_alleles))
+    )
 
     mhc_seqs_dict = {}
     for allele, seq in zip(mhc_alleles, mhc_seqs):
@@ -195,46 +134,41 @@ def save_training_data(X, Y, alleles):
             f.write("\n")
 
 if __name__ == '__main__':
-
+    logging.basicConfig(level=logging.INFO)
     import argparse
     parser = argparse.ArgumentParser(
-        description='Generate training data for MHC binding prediction')
+        description='Create feature vectors and labels from MHC binding data')
 
     parser.add_argument(
-        "--iedb-filename",
-        default = IEDB_FILENAME, 
-    )
-    parser.add_argument(
-        "--iedb-url",
-        default = IEDB_URL, 
-    )
-    parser.add_argument(
-        "--iedb-output", 
-        default='mhc.csv')
+        "--input-file", 
+        default='mhc_grouped.csv')
 
     parser.add_argument(
         "--mhc-seq-filename", 
-        default = "MHC_aa_seqs.csv"
-    )
-    parser.add_argument(
-        "--aa-pair-features", 
-        default = False, 
-        action = "store_true"
-    )
+        default = "MHC_aa_seqs.csv")
 
     parser.add_argument(
-        "--neighboring-residues",  action='store_true', default=False)
+        "--neighboring-residues", 
+        action='store_true', 
+        default=False)
+
+    parser.add_argument(
+        "--length",
+        type=int, 
+        default=9)
+
+    parser.add_argument(
+        "--mhc-class",
+        default="I")
        
     args = parser.parse_args()
+    df_peptides = pd.read_csv(args.input_file)
+    print "Loaded %d peptide/allele entries", len(df_peptides)
+    print df_peptides.columns
     
-    df_peptides = load_iedb(args.iedb_filename, args.iedb_url)
+    df_mhc = pd.read_csv(args.mhc_seq_filename)
+    print "Loaded %d MHC alleles" % len(df_mhc)
 
-    df_peptides.to_csv(args.iedb_output, index=False)
-    
-    if args.aa_pair_features:
-        df_mhc = pd.read_csv(args.mhc_seq_filename)
-        print "Loaded %d MHC alleles" % len(df_mhc)
-
-        X,Y,alleles = generate_training_data(df_peptides, df_mhc)
-        save_training_data(X, Y, alleles)
+    X,Y,alleles = generate_training_data(df_peptides, df_mhc)
+    save_training_data(X, Y, alleles)
 
