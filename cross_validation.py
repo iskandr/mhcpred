@@ -1,3 +1,4 @@
+import math 
 
 import numpy as np 
 import pandas as pd 
@@ -5,6 +6,7 @@ import pandas as pd
 import sklearn.linear_model
 import sklearn.metrics 
 
+import epitopes.amino_acid
 from parakeet import jit 
 from censored_regression import CensoredLasso, CensoredRidge
         
@@ -45,7 +47,8 @@ def encode_inputs(X_pair_indices, pairwise_feature_vec):
     return X_encoded
 
 @jit 
-def encode_pairwise_coefficients(X_idx, model_weights):
+def encode_pairwise_coefficients(
+        X_idx, model_weights, censored_lasso = False):
     n_samples, n_position_pairs = X_idx.shape 
     n_amino_acid_pairs = 20 * 20
     coeffs = np.zeros((n_samples, n_amino_acid_pairs), dtype=float)
@@ -54,35 +57,18 @@ def encode_pairwise_coefficients(X_idx, model_weights):
             coeffs[row_idx, xi] += model_weights[col_idx]
     return coeffs
 
-def estimate_pairwise_features(X_idx, model_weights, Y, 
-                                censor_cutoff = 2000, 
-                                log_targets = False, 
-                                regularization_weight = 1):
-    """
-    Estimators:
-    - ridge : Ridge Regression for all IC50 values
+def estimate_pairwise_features(X_idx, model_weights, Y):
+   
+    assert len(model_weights) == X_idx.shape[1], \
+        "expected shape %s != %s" % (X_idx.shape[1], model_weights.shape)
 
-    - ...otherwise: minimize L1 norm s.t. IC50 <= 2000nM have exact same values, non-binders have predict IC50 > 2000nM
-
-    cutoff : float 
-        Binding affinity below which we want exact match of predicted values 
-    """
-    if log_targets:
-        Y = np.log(Y) 
-        censor_cutoff = np.log(censor_cutoff)
-
-    assert len(model_weights) == X_idx.shape[1]
     assert (X_idx.max() < 20 * 20), X_idx.max()
     C = encode_pairwise_coefficients(X_idx, model_weights)
-
-    model = CensoredLasso(regularization_weight = regularization_weight, verbose = False)
-    
-    nonbinders = Y > censor_cutoff
-    Y[nonbinders] = censor_cutoff
-    model.fit(C,Y,nonbinders)
-    print "--- AA interaction sparsity: %d / %d" % \
-         ((np.abs(model.coef_) < 10**-6.0).sum(), len(model.coef_))
-    return model.coef_
+    sgd_iters =  int(math.ceil(10.0 ** 6 / len(C)))
+    model = model = sklearn.linear_model.SGDClassifier(shuffle = True, n_iter = sgd_iters, alpha = 0.005)
+    #model = sklearn.linear_model.LogisticRegression()
+    model.fit(C, Y <= 500)
+    return model.coef_.squeeze()
 
 def split(data, start, stop):
     """
@@ -98,41 +84,32 @@ def split(data, start, stop):
 
 def evaluate_dataset(
         X_idx, Y, train_mask, allele, 
-        initial_coef, n_iters, 
-        binding_cutoff, censor_cutoff,
-        log_targets = False, 
-        regularization_weight_aa = 1, 
-        regularization_weight_pos = 1):
+        initial_coef, n_iters):
 
     coeff_vec = initial_coef
 
     X_train_idx = X_idx[train_mask]
     X_test_idx = X_idx[~train_mask]
     assert X_train_idx.shape[1] == X_test_idx.shape[1]
-    Y_train = Y[train_mask]
-    Y_test = Y[~train_mask]
+    Y_train = Y[train_mask] 
+    train_lte = Y_train <= 500
+    Y_test = Y[~train_mask] 
+    actual_lte = Y_test <= 500
    
 
     print "Training baseline accuracy", \
-        max(np.mean(Y_train <= binding_cutoff), 
-            1 - np.mean(Y_train <= binding_cutoff))
+        max(np.mean(actual_lte), 
+            1 - np.mean(actual_lte))
     
-    mask = Y_train > censor_cutoff
-    Y_train_censored = Y_train.copy()
-    Y_train_censored[mask] = censor_cutoff
-    log_Y_train = np.log(Y_train)
-    log_Y_train_censored = np.log(Y_train_censored)
-
-    model = \
-        CensoredLasso(
-            regularization_weight = regularization_weight_pos, 
-            verbose = False)
     
+    sgd_iters =  int(math.ceil(10.0 ** 6 / len(X_train_idx)))
+    model = sklearn.linear_model.SGDClassifier(penalty = 'l1', loss = 'log', shuffle = True, n_iter = sgd_iters, alpha = 0.0001) 
+    #model = sklearn.linear_model.LogisticRegression()
     for i in xrange(n_iters):
         print 
         print "- fitting regression model #%d (%s)" % ((i + 1), allele)
         
-        assert len(coeff_vec)== (20*20)
+        assert len(coeff_vec)== (20*20), "Expected 400, got %s" % (len(coeff_vec),)
         X_train = encode_inputs(X_train_idx, coeff_vec)
 
         X_test = encode_inputs(X_test_idx, coeff_vec)
@@ -145,40 +122,46 @@ def evaluate_dataset(
         
         last_iter = (i == n_iters - 1)
         
-        if log_targets:
-            model.fit(X_train, log_Y_train_censored, mask)
+        if last_iter:
+            #model = sklearn.ensemble.RandomForestClassifier(300)
+            #model = sklearn.ensemble.RandomForestRegressor(300)
+            #model = sklearn.linear_model.LinearRegression()
+            model = sklearn.linear_model.LinearRegression()#LassoCV(normalize = True)
+            model.fit(X_train, np.log(Y_train))
+            pred = np.exp(model.predict(X_test))
+            print "--- Pred", pred[:10].astype(int)
+            print "--- True", Y_test[:10].astype(int)
+            pred_lte = (pred <= 500)
+
         else:
-            model.fit(X_train, Y_train_censored, mask)
-
-        pred = model.predict(X_test)
-        if log_targets:
-            pred = np.exp(pred)
-
-        if not last_iter:
-            model_weights = model.coef_
+            model.fit(X_train, train_lte)
+            pred = model.predict_proba(X_test)[:, 1]
+            
+            pred_lte = pred >= 0.5
+        print "Predicted binders fraction", np.mean(pred_lte)
+        
+        if  last_iter:
+            auc = sklearn.metrics.roc_auc_score(actual_lte, -pred)
+        else:
+            auc = sklearn.metrics.roc_auc_score(actual_lte, pred)
+            model_weights = model.coef_.squeeze()
             print "--- Positional min weight abs:",\
                  np.abs(model_weights).min()
             print "--- Positional sparsity: %d / %d" % \
                 (np.sum(np.abs(model_weights) < 10.0 ** -6), len(model_weights))
             coeff_vec = \
                 estimate_pairwise_features(
-                    X_train_idx, model_weights, Y_train, 
-                    censor_cutoff = censor_cutoff, 
-                    regularization_weight = regularization_weight_aa)
-        
-        pred_lte = pred <= binding_cutoff
-        median_error = np.median(np.abs(pred-Y_test))
-        actual_lte = Y_test <= binding_cutoff
+                    X_train_idx, model_weights, Y_train)
+
         pred_gt = ~pred_lte 
-        actual_gt = ~actual_lte 
+        actual_gt = ~actual_lte
         correct = (pred_lte & actual_lte) | (pred_gt & actual_gt)
         accuracy = np.mean(correct)
-
         sensitivity = np.mean(pred_lte[actual_lte])
         specificity = np.mean(actual_lte[pred_lte])
-        auc = sklearn.metrics.roc_auc_score(actual_lte, 1.0 / pred)
+
+        
         print "--- %d binders of %d identified" % ((correct & pred_lte).sum(), actual_lte.sum())
-        print "--- median error", median_error 
         print "--- accuracy", accuracy 
         print "--- sensitivity", sensitivity 
         print "--- specificity", specificity
@@ -186,81 +169,37 @@ def evaluate_dataset(
     return accuracy, auc, sensitivity, specificity
 
 
-def find_best_regularization_weights(
-        X, Y, censor_cutoff, initial_coef, 
-        candidate_weights, 
-        binding_cutoff = 500, 
-        n = 2000, 
-        n_iters = 4):
-    n = min(n, len(X) / 2)
-    indices = np.arange(len(X))
-    train_idx = indices[:n]
-    test_idx = indices[n:2*n]
-    X_train_indirect = X[train_idx]
-    X_test_indirect = X[test_idx]
-    Y_train = Y[train_idx]
-    Y_test = Y[test_idx]
-    X_train_init = encode_inputs(X_train_indirect, initial_coef)
-    C_train = Y_train > censor_cutoff
-    Y_train[C_train] = censor_cutoff
-    best_w_pos= None 
-    best_w_aa = None
-    best_auc = 0
-    print "Testing for best regularization_weight: "
-    for w_pos in candidate_weights:
-        for w_aa in candidate_weights:
+def make_aa_volume_ratio_dictionary():
+    result = {}
+    volumes = epitopes.amino_acid.volume.value_dict
+    for a in AMINO_ACID_LETTERS:
+        va = volumes[a]
+        for b in AMINO_ACID_LETTERS:
+            vb = volumes[b]
+            result[a + b] = np.log(va/vb)
+    return result
 
-            pos_regression = CensoredLasso(regularization_weight = w_pos)
-            aa_regression = CensoredLasso(regularization_weight = w_aa)
-            X_train = X_train_init
-            for i in xrange(n_iters):
-                pos_regression.fit(X_train, Y_train, C_train)
-                if i < n_iters - 1:
-                    X_train_pairwise = \
-                        encode_pairwise_coefficients(
-                        X_train_indirect, 
-                        pos_regression.coef_)
+def make_aa_hydropathy_product_dictionary():
+    result  = {}
+    d = epitopes.amino_acid.hydropathy.value_dict
+    for a in AMINO_ACID_LETTERS:
+        ha = d[a]
+        for b in AMINO_ACID_LETTERS:
+            hb = d[b]
+            result[a + b] = ha * hb 
+    return result
 
-
-                    aa_regression.fit(X_train_pairwise, Y_train, C_train)
-                    X_train = \
-                        encode_inputs(
-                            X_train_indirect, aa_regression.coef_)
-            X_test = encode_inputs(X_train_indirect, aa_regression.coef_)
-            pred = pos_regression.predict(X_test)
-            print (Y_test <= binding_cutoff).mean(), (pred <= binding_cutoff).mean()
-            
-            auc = sklearn.metrics.roc_auc_score(
-                Y_test <= binding_cutoff, -pred)
-            print "aa = %f, pos = %f, auc = %f" % (w_aa, w_pos, auc)
-            if auc > best_auc:
-                best_auc = auc 
-                best_w_aa = w_aa
-                best_w_pos = w_pos 
-        
-    print "Best AUC %f w_aa %f w_pos" % (best_auc, w_aa, w_pos)
-    return w_aa, w_pos 
-
-
-
-
-def leave_one_out(X_idx, Y, W, alleles, 
-                  binding_cutoff = 500, 
-                  censor_cutoff = 2000, 
-                  n_iters = 10,
-                  log_targets = False, 
-                  regularization_weights = \
-                    [5, 1, 0.5, .1, .05, .01, .001, 0]):
+def leave_one_out(X_idx, Y, alleles, 
+                  n_iters = 7, 
+                  binding_cutoff = 500,
+                  output_file_name = "cv_results.csv"):
     """
     X_idx : 2-dimensional array of integers with shape = (n_samples, n_features) 
         Elements are indirect references to elements of the feature encoding matrix
     
     Y : 1-dimensional array of floats with shape = (n_samples,)
         target IC50 values
-    
-    W : 1-dimensional array of floats with shape = (n_samples,)
-        sample weights 
-    
+
     alleles : str list 
 
     cutoff : int 
@@ -275,17 +214,28 @@ def leave_one_out(X_idx, Y, W, alleles,
     accuracies = []
     sensitivities = []
     specificities = []
+    aucs = []
 
     pmbec_coeff = pmbec.read_coefficients()
     pmbec_coeff_vec = feature_dictionary_to_vector(pmbec_coeff)
 
+    volume_ratio_dict = make_aa_volume_ratio_dictionary()
+    volume_ratio_vec = feature_dictionary_to_vector(volume_ratio_dict)
+    hydropathy_product_dict = make_aa_hydropathy_product_dictionary()
+    hydropathy_product_vec = feature_dictionary_to_vector(hydropathy_product_dict)
     
-    unique_alleles = set(alleles)
+    unique_human_alleles = set(a for a in alleles if a.startswith("HLA"))
 
     results = {}
+    np.random.seed(1)
+    index = np.arange(len(Y))
+    
 
+    rand_vec = np.random.randn(len(hydropathy_product_vec))
+    output_file = open(output_file_name, 'w')
+    output_file.write("Allele,PCC,AUC,Sensitivity,Specificity\n")
     try:
-        for allele in sorted(unique_alleles):
+        for allele in sorted(unique_human_alleles):
             print 
             print ">>>", allele 
 
@@ -294,30 +244,27 @@ def leave_one_out(X_idx, Y, W, alleles,
                     (Y[~mask] <= binding_cutoff).std() == 0:
                 print "Skipping %s" % allele
                 continue 
-            regularization_weight_aa, regularization_weight_pos = \
-                find_best_regularization_weights(
-                    X_idx[mask], Y[mask], 
-                    censor_cutoff, pmbec_coeff_vec, 
-                    regularization_weights) 
-        
+            
+
             accuracy, auc, sensitivity, specificity = \
                 evaluate_dataset(
                     X_idx, Y, mask, allele, 
-                    pmbec_coeff_vec, n_iters, 
-                    binding_cutoff, censor_cutoff,
-                    log_targets,
-                    regularization_weight_aa, regularization_weight_pos)
-
+                    pmbec_coeff_vec, n_iters)
+            output_file.write("%s,%f,%f,%f,%f\n" % \
+                (allele,accuracy,auc,sensitivity,specificity))
             sensitivities.append(sensitivity)
             specificities.append(specificity)
             accuracies.append(accuracy)
+            aucs.append(auc)
             results[allele] = (accuracy, auc)
     except KeyboardInterrupt:
-        print "Results:"
-        for allele in sorted(results.keys()):
-            (pcc, auc) = results[allele]
-            print "%s PCC %0.5f AUC %0.5f" % (allele, pcc, auc)
-
+        print "KeyboardInterrupt"
+        pass 
+    output_file.close()
+    print "Results:"
+    for allele in sorted(results.keys()):
+        (pcc, auc) = results[allele]
+        print "%s PCC %0.5f AUC %0.5f" % (allele, pcc, auc)
     print "Overall CV sensitivity =", np.mean(sensitivities)
     print "Overall CV specificity =", np.mean(specificities)
     print "Overall CV accuracy =", np.mean(accuracies)
