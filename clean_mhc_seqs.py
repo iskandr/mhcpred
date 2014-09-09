@@ -26,7 +26,7 @@ if __name__ == '__main__':
 		most_common_key, most_common_count = counter.most_common()[0]
 		fraction =  float(most_common_count)/total
 		print i, most_common_key, most_common_count, "/", total, fraction 
-		if fraction > 0.75:
+		if fraction > 0.95:
 			print "-- Skipping position %d" % i 
 			keep_position[i] = False 
 

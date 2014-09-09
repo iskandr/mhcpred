@@ -13,19 +13,45 @@ import logging
 def generate_training_data(
         df_peptides,
         df_mhc, 
-        neighboring_residue_interactions = False,
-        mhc_class = "I",
-        length = 9):
+        neighboring_residue_interactions=False,
+        mhc_class="I",
+        length=9,
+        human=False):
 
     df_peptides['MHC Allele'] = \
         df_peptides['MHC Allele'].str.replace('*', '').str.strip()
     
-    if length:
-        df_peptides = df_peptides[df_peptides.Epitope.str.len() == 9]
-    
+    if human:
+        human_mask = df_peptides["MHC Allele"].str.startswith("HLA")
+        print "Keeping %d / %d  entries for human alleles" % (
+            human_mask.sum(),
+            len(human_mask),
+        )
+        df_peptides = df_peptides[human_mask]
+        
     if mhc_class:
-        df_peptides = df_peptides[df_peptides['MHC Class'] == mhc_class]
-    
+        mhc_class_mask = df_peptides['MHC Class'] == mhc_class
+        print "Keeping %d / %d entries for MHC class = %s" % (
+            mhc_class_mask.sum(),
+            len(mhc_class_mask),
+            mhc_class
+        )
+        df_peptides = df_peptides[mhc_class_mask]
+
+    if length:
+        length_mask = df_peptides.Epitope.str.len() == length
+        print "Keeping %d / %d entries with length = %d" % (
+            length_mask.sum(), 
+            len(length_mask),
+            length
+        )
+        df_peptides = df_peptides[length_mask]
+    else:
+        df_peptides = df_peptides[df_peptides.Epitope.str.len() > 5]
+
+    df_peptides = df_peptides.reset_index()
+
+    ic50 = df_peptides["IC50_Median"]
     has_ic50 = df_peptides["IC50_Count"] > 0
     ic50_in_range = df_peptides["IC50_Median"] < 10**7
     ic50_mask = has_ic50 & ic50_in_range
@@ -39,19 +65,17 @@ def generate_training_data(
     neg_count = df_peptides["Negative"]
 
     diff = (pos_count - neg_count)
-    pos_mask = diff >= 1
-    neg_mask = diff <= -1
+    pos_mask = diff >= 0.5
+    neg_mask = diff < -0.5
 
-    category_mask = pos_mask | neg_mask
+    category_mask = (pos_mask | neg_mask)
     print "Keeping %d entries for categorical data" % category_mask.sum()
-    category = np.sign(diff)
-
-    assert False
+    category = np.sign(diff) * category_mask
 
     # reformat HLA allales 'HLA-A*03:01' into 'HLA-A03:01'
     peptide_alleles = df_peptides['MHC Allele']
     peptide_seqs = df_peptides['Epitope']
-    peptide_ic50 = df_peptides['IC50']
+    
     
     print "%d unique peptide alleles" % len(peptide_alleles.unique())
     
@@ -62,32 +86,38 @@ def generate_training_data(
     assert len(mhc_alleles) == len(df_mhc)
     assert len(mhc_seqs) == len(df_mhc)
 
-    print list(sorted(peptide_alleles.unique()))
+    unique_alleles = set(peptide_alleles.unique())
+    print list(sorted(unique_alleles))
     logging.info(
-        "%d common alleles",
-        len(set(mhc_alleles).intersection(set(peptide_alleles.unique())))
+        "%d / %d available alleles",
+        len(set(mhc_alleles).intersection(unique_alleles)),
+        len(unique_alleles)
     )
     logging.info(
         "Missing allele sequences for %s", 
-        set(peptide_alleles.unique()).difference(set(mhc_alleles))
+        list(sorted(unique_alleles.difference(set(mhc_alleles))))
     )
 
     mhc_seqs_dict = {}
     for allele, seq in zip(mhc_alleles, mhc_seqs):
         mhc_seqs_dict[allele] = seq 
-
-
     X = []
-    Y = []
+    Y_IC50 = []
+    Y_category = []
     alleles = []
-    n_dims = 9 * len(mhc_seqs[0])
+    n_dims = length * len(mhc_seqs[0])
     for peptide_idx, allele in enumerate(peptide_alleles):
+
         if allele in mhc_seqs_dict:
             allele_seq = mhc_seqs_dict[allele]
             peptide = peptide_seqs[peptide_idx]
+            
             n_peptide_letters = len(peptide)
             n_mhc_letters = len(allele_seq)
-            ic50 = peptide_ic50[peptide_idx]
+            curr_ic50 = ic50[peptide_idx] * ic50_mask[peptide_idx]
+            binder = category[peptide_idx]
+            print peptide_idx, allele, peptide, curr_ic50, binder, pos_count[peptide_idx], neg_count[peptide_idx]
+            
             #print peptide_idx, allele, peptide, allele_seq, ic50
             vec = [AMINO_ACID_PAIR_POSITIONS[peptide_letter + mhc_letter] 
                     for peptide_letter in peptide
@@ -101,37 +131,24 @@ def generate_training_data(
                         vec.append(
                             AMINO_ACID_PAIR_POSITIONS[before + peptide_letter]
                         )
-                    if i < 8:
+                    if i < length - 1:
                         after = peptide_substring[i + 1]
                         vec.append(
                             AMINO_ACID_PAIR_POSITIONS[peptide_letter + after]
                         )
                 
             X.append(np.array(vec))
-            Y.append(ic50)
+            Y_IC50.append(curr_ic50)
+            Y_category.append(binder)
             alleles.append(allele)
     X = np.array(X)
-    Y = np.array(Y)
-
-    print "IC50 min = %f, max = %f, median = %f" % \
-        (np.min(Y),
-         np.max(Y),
-         np.median(Y)
-        )
-    print "Generated data shape", X.shape
-    assert len(Y) == X.shape[0]
-    return X, Y, alleles
+    Y_IC50 = np.array(Y_IC50)
+    Y_category = np.array(Y_category)
+    assert len(Y_IC50) == X.shape[0]
+    assert len(Y_category) == X.shape[0]
+    return X, Y_IC50, Y_category, alleles
 
 
-
-def save_training_data(X, Y, alleles):
-    print "Saving to disk..."
-    np.save("X.npy", X)
-    np.save("Y.npy", Y)
-    with open('alleles.txt', 'w') as f:
-        for allele in alleles:
-            f.write(allele)
-            f.write("\n")
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
@@ -157,6 +174,10 @@ if __name__ == '__main__':
         type=int, 
         default=9)
 
+    parser.add_argument("--human", 
+        default = False, 
+        action="store_true")
+
     parser.add_argument(
         "--mhc-class",
         default="I")
@@ -169,6 +190,19 @@ if __name__ == '__main__':
     df_mhc = pd.read_csv(args.mhc_seq_filename)
     print "Loaded %d MHC alleles" % len(df_mhc)
 
-    X,Y,alleles = generate_training_data(df_peptides, df_mhc)
-    save_training_data(X, Y, alleles)
-
+    X, Y_IC50, Y_category, alleles = generate_training_data(
+        df_peptides, df_mhc, 
+        length=args.length,
+        mhc_class = args.mhc_class,
+        human=args.human)
+    print "Generated X.shape = %s" % (X.shape,)
+    print "# IC50 target values = %d" % (Y_IC50> 0).sum()
+    print "# binding category values = %d" % (Y_category!=0).sum()
+    print "Saving to disk..."
+    np.save("X.npy", X)
+    np.save("Y_IC50.npy", Y_IC50)
+    np.save("Y_category.npy", Y_category)
+    with open('alleles.txt', 'w') as f:
+        for allele in alleles:
+            f.write(allele)
+            f.write("\n")

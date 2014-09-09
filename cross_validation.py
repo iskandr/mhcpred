@@ -84,7 +84,8 @@ def split(data, start, stop):
 
 def evaluate_dataset(
         X_idx, Y, train_mask, allele, 
-        initial_coef, n_iters):
+        initial_coef, n_iters,
+        binding_cutoff = 500):
 
     coeff_vec = initial_coef
 
@@ -126,12 +127,18 @@ def evaluate_dataset(
             #model = sklearn.ensemble.RandomForestClassifier(300)
             #model = sklearn.ensemble.RandomForestRegressor(300)
             #model = sklearn.linear_model.LinearRegression()
-            model = sklearn.linear_model.LinearRegression()#LassoCV(normalize = True)
-            model.fit(X_train, np.log(Y_train))
+            #model = sklearn.linear_model.LinearRegression()#LassoCV(normalize = True)
+            #model.fit(X_train, np.log(Y_train))
+            
+            model = CensoredLasso(regularization_weight = 0.0001)
+            censor_cutoff = 20000
+            C = Y_train > censor_cutoff
+            Y_train[C] = censor_cutoff
+            model.fit(X_train, np.log(Y_train), C)
             pred = np.exp(model.predict(X_test))
             print "--- Pred", pred[:10].astype(int)
             print "--- True", Y_test[:10].astype(int)
-            pred_lte = (pred <= 500)
+            pred_lte = (pred <= binding_cutoff)
 
         else:
             model.fit(X_train, train_lte)
