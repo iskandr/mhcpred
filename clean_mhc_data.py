@@ -86,10 +86,6 @@ def load_iedb(filename, url, only_human = False):
 
     
 def group_by_peptide_and_allele(df_peptides, max_ic50 = 10**7):
-    logging.info("# assay results = %d", len(df_peptides))
-
-    print "Epitope lengths"
-    print df_peptides['Epitope'].str.len().value_counts()
 
     records = []
 
@@ -116,8 +112,15 @@ def group_by_peptide_and_allele(df_peptides, max_ic50 = 10**7):
             record['Positive-All'] = \
                 sum(record[l] for l in positive_binding_categories)
             ic50 = group['IC50']
+
             mask = ~ic50.isnull()
             mask &= ic50 < max_ic50
+            
+            # should we further restrict to only IC50 results? 
+            # are EC50, Kd, and IC50 comparable?
+            units = group['Assay Units']
+            mask &= units.str.contains('nM', na=False)
+            
             ic50 = ic50[mask]
             record['IC50_Count'] = len(ic50)
             record['IC50_Min'] = ic50.min()
@@ -155,6 +158,11 @@ if __name__ == '__main__':
     
     df_iedb = load_iedb(args.iedb_filename, args.iedb_url)
 
+    logging.info("# assay results = %d", len(df_iedb))
+
+    print "Epitope lengths"
+    print df_iedb['Epitope'].str.len().value_counts()
+    
     if args.iedb_output:
         df_iedb.to_csv(args.iedb_output, index=False)
 

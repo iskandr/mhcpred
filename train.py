@@ -5,9 +5,8 @@ import cPickle
 
 import pmbec 
 from epitopes import amino_acid 
-
-
 from parakeet import jit 
+import scipy.weave 
 import sklearn.linear_model
 from sklearn.linear_model import LassoCV
 import sklearn.svm 
@@ -55,7 +54,6 @@ def feature_dictionary_to_vector(dictionary):
     assert all(vi is not None for vi in vec) 
     return np.array(vec)
 
-@jit 
 def encode_inputs(X_pair_indices, pairwise_feature_vec):
     """
     X_pair_indices : 2d array
@@ -63,25 +61,62 @@ def encode_inputs(X_pair_indices, pairwise_feature_vec):
     pairwise_features : dict
         Maps from AA pair indices to continuous values 
     """ 
+
+    code = """
+        for (int i = 0; i < n_samples; ++i) {
+            for (int j = 0; j < n_dims; ++j) {
+                X_encoded[i*n_dims+j] = \
+                    pairwise_feature_vec[X_pair_indices[i*n_dims+j]];
+            }
+        }
+    """
+    X_pair_indices = np.ascontiguousarray(X_pair_indices)
+    pairwise_feature_vec = np.ascontiguousarray(
+        pairwise_feature_vec)
     n_samples, n_dims = X_pair_indices.shape 
     n_pairwise_features = len(pairwise_feature_vec)
     X_encoded = np.zeros((n_samples, n_dims), dtype=float)
-    for row_idx, x in enumerate(X_pair_indices):
-        X_encoded[row_idx, :] = pairwise_feature_vec[x]
+    scipy.weave.inline(
+        code, 
+        arg_names=[
+            "n_samples", 
+            "n_dims", 
+            "pairwise_feature_vec",
+            "X_pair_indices",
+            "X_encoded"
+        ]
+    )
+
     return X_encoded
 
-@jit 
-def encode_pairwise_coefficients(
-        X_idx, model_weights, censored_lasso = False):
+
+def encode_pairwise_coefficients(X_idx, model_weights):
     n_samples, n_position_pairs = X_idx.shape 
     n_amino_acid_pairs = 20 * 20
+    X_idx = np.ascontiguousarray(X_idx)
+    model_weights = np.ascontiguousarray(model_weights)
     coeffs = np.zeros((n_samples, n_amino_acid_pairs), dtype=float)
-    for row_idx, x in enumerate(X_idx):
-        for col_idx, xi  in enumerate(x):
-            coeffs[row_idx, xi] += model_weights[col_idx]
+    code = """
+        for (int i = 0; i < n_samples; ++i) {
+            for (int j = 0; j < n_position_pairs; ++j) {
+                int xi = X_idx[i * n_position_pairs + j];
+                coeffs[i * n_amino_acid_pairs + xi] += model_weights[j];
+            }
+        }
+    """
+    scipy.weave.inline(
+        code,
+        arg_names=[
+            "X_idx",
+            "coeffs",
+            "model_weights",
+            "n_samples",
+            "n_position_pairs",
+            "n_amino_acid_pairs",
+        ])
     return coeffs
-
-def estimate_pairwise_features(X_idx, model_weights, Y):
+   
+def estimate_pairwise_features(X_idx, model_weights, Y_label):
    
     assert len(model_weights) == X_idx.shape[1], \
         "expected shape %s != %s" % (X_idx.shape[1], model_weights.shape)
@@ -89,9 +124,9 @@ def estimate_pairwise_features(X_idx, model_weights, Y):
     assert (X_idx.max() < 20 * 20), X_idx.max()
     C = encode_pairwise_coefficients(X_idx, model_weights)
     sgd_iters =  int(math.ceil(10.0 ** 6 / len(C)))
-    model = model = sklearn.linear_model.SGDClassifier(shuffle = True, n_iter = sgd_iters, alpha = 0.005)
-    #model = sklearn.linear_model.LogisticRegression()
-    model.fit(C, Y <= 500)
+    model = sklearn.linear_model.SGDClassifier(
+        shuffle = True, n_iter = sgd_iters, alpha = 0.01)
+    model.fit(C, Y_label)
     return model.coef_.squeeze()
 
 def split(data, start, stop):
@@ -107,18 +142,18 @@ def split(data, start, stop):
     return train, test 
 
 def evaluate_dataset(
-        X_idx, Y, train_mask, allele, 
+        X_idx, Y_IC50, Y_cat, train_mask, allele, 
         initial_coef, n_iters,
         binding_cutoff = 500):
 
     coeff_vec = initial_coef
-
-    X_train_idx = X_idx[train_mask]
+    cat_mask = np.abs(Y_cat) > 0
+    X_train_idx = X_idx[train_mask ]
     X_test_idx = X_idx[~train_mask]
     assert X_train_idx.shape[1] == X_test_idx.shape[1]
-    Y_train = Y[train_mask] 
+    Y_train = Y_IC50[train_mask] 
     train_lte = Y_train <= 500
-    Y_test = Y[~train_mask] 
+    Y_test = Y_IC50[~train_mask] 
     actual_lte = Y_test <= 500
    
 
@@ -133,7 +168,7 @@ def evaluate_dataset(
         loss = 'log', 
         shuffle = True, 
         n_iter = sgd_iters, 
-        alpha = 0.0001) 
+        alpha = 0.0005) 
     #model = sklearn.linear_model.LogisticRegression()
     for i in xrange(n_iters):
         print 
@@ -152,34 +187,15 @@ def evaluate_dataset(
         
         last_iter = (i == n_iters - 1)
         
-        if last_iter:
-            #model = sklearn.ensemble.RandomForestClassifier(300)
-            #model = sklearn.ensemble.RandomForestRegressor(300)
-            #model = sklearn.linear_model.LinearRegression()
-            model = LassoCV(normalize = True)
-            #model.fit(X_train, np.log(Y_train))
-            
-            #model = CensoredLasso(regularization_weight = 0.0001)
-            censor_cutoff = 20000
-            C = Y_train >= censor_cutoff
-            #Y_train[C] = censor_cutoff
-            model.fit(X_train, np.log(Y_train))
-            pred = np.exp(model.predict(X_test))
-            print "--- Pred", pred[:10].astype(int)
-            print "--- True", Y_test[:10].astype(int)
-            pred_lte = (pred <= binding_cutoff)
-
-        else:
-            model.fit(X_train, train_lte)
-            pred = model.predict_proba(X_test)[:, 1]
-            
-            pred_lte = pred >= 0.5
+        
+        model.fit(X_train, train_lte)
+        
+        pred = model.predict_proba(X_test)[:, 1]
+        pred_lte = pred >= 0.5
         print "Predicted binders fraction", np.mean(pred_lte)
         
-        if  last_iter:
-            auc = sklearn.metrics.roc_auc_score(actual_lte, -pred)
-        else:
-            auc = sklearn.metrics.roc_auc_score(actual_lte, pred)
+        auc = sklearn.metrics.roc_auc_score(actual_lte, pred)
+        if not last_iter:
             model_weights = model.coef_.squeeze()
             print "--- Positional min weight abs:",\
                  np.abs(model_weights).min()
@@ -187,7 +203,7 @@ def evaluate_dataset(
                 (np.sum(np.abs(model_weights) < 10.0 ** -6), len(model_weights))
             coeff_vec = \
                 estimate_pairwise_features(
-                    X_train_idx, model_weights, Y_train)
+                    X_train_idx, model_weights, train_lte)
 
         pred_gt = ~pred_lte 
         actual_gt = ~actual_lte
@@ -197,7 +213,9 @@ def evaluate_dataset(
         specificity = np.mean(actual_lte[pred_lte])
 
         
-        print "--- %d binders of %d identified" % ((correct & pred_lte).sum(), actual_lte.sum())
+        print "--- %d binders of %d identified" % (
+            (correct & pred_lte).sum(), actual_lte.sum()
+        )
         print "--- accuracy", accuracy 
         print "--- sensitivity", sensitivity 
         print "--- specificity", specificity
@@ -225,16 +243,19 @@ def make_aa_hydropathy_product_dictionary():
             result[a + b] = ha * hb 
     return result
 
-def leave_one_out(X_idx, Y, alleles, 
-                  n_iters = 10, 
+def leave_one_out(X_idx, Y_IC50, Y_cat, alleles, 
+                  n_iters = 5, 
                   binding_cutoff = 500,
                   output_file_name = "cv_results.csv"):
     """
-    X_idx : 2-dimensional array of integers with shape = (n_samples, n_features) 
-        Elements are indirect references to elements of the feature encoding matrix
+    X_idx : 2d array of integers with shape = (n_samples, n_features) 
+        Elements are indirect references to elements of the 
+        feature encoding matrix
     
-    Y : 1-dimensional array of floats with shape = (n_samples,)
+    Y_IC50 : 1d array of floats with shape = (n_samples,) 
         target IC50 values
+
+    Y_cat : 1d array of boolean elements with shape = (n_samples,)
 
     alleles : str list 
 
@@ -245,7 +266,7 @@ def leave_one_out(X_idx, Y, alleles,
         Number of training iterations to refine feature matrix 
     """
 
-    n_samples = len(Y)
+    n_samples = len(Y_IC50)
     
     accuracies = []
     sensitivities = []
@@ -262,12 +283,9 @@ def leave_one_out(X_idx, Y, alleles,
     
     unique_human_alleles = set(a for a in alleles if a.startswith("HLA"))
 
-    results = {}
-    np.random.seed(1)
-    index = np.arange(len(Y))
-    
 
-    rand_vec = np.random.randn(len(hydropathy_product_vec))
+    np.random.seed(1)
+    results = {}
     output_file = open(output_file_name, 'w')
     output_file.write("Allele,PCC,AUC,Sensitivity,Specificity\n")
     try:
@@ -276,15 +294,14 @@ def leave_one_out(X_idx, Y, alleles,
             print ">>>", allele 
 
             mask = ~np.array([x == allele for x in alleles])
-            if (Y[mask] <= binding_cutoff).std() == 0 or \
-                    (Y[~mask] <= binding_cutoff).std() == 0:
+            if (Y_IC50[mask] <= binding_cutoff).std() == 0 or \
+                    (Y_IC50[~mask] <= binding_cutoff).std() == 0:
                 print "Skipping %s" % allele
                 continue 
             
-
             accuracy, auc, sensitivity, specificity = \
                 evaluate_dataset(
-                    X_idx, Y, mask, allele, 
+                    X_idx, Y_IC50, Y_cat, mask, allele, 
                     pmbec_coeff_vec, n_iters)
             output_file.write("%s,%f,%f,%f,%f\n" % \
                 (allele,accuracy,auc,sensitivity,specificity))
@@ -301,42 +318,43 @@ def leave_one_out(X_idx, Y, alleles,
     for allele in sorted(results.keys()):
         (pcc, auc) = results[allele]
         print "%s PCC %0.5f AUC %0.5f" % (allele, pcc, auc)
-    print "Overall CV sensitivity =", np.mean(sensitivities)
-    print "Overall CV specificity =", np.mean(specificities)
-    print "Overall CV accuracy =", np.mean(accuracies)
+    print "Overall AUC", np.median(aucs)
+    print "Overall CV sensitivity =", np.median(sensitivities)
+    print "Overall CV specificity =", np.median(specificities)
+    print "Overall CV accuracy =", np.median(accuracies)
         
 
 
 
-def shuffle(X, Y, alleles):
-    n = len(Y)
+def shuffle(alleles, *arrays):
+    n = len(alleles)
     indices = np.arange(n)
     np.random.shuffle(indices)
-    X = X[indices]
-    Y = Y[indices]
+    arrays = [x[indices] for x in arrays]
     alleles = [alleles[i] for i in indices]
-    return X, Y, alleles
+    return alleles, arrays
 
 
 def load_training_data():
-    print "Loading X"
     X = np.load("X.npy")
-    print "Loading Y"
-    Y = np.load("Y_IC50.npy")
+    Y_IC50 = np.load("Y_IC50.npy")
+    Y_cat = np.load("Y_category.npy")
 
     with open('alleles.txt', 'r') as f:
         alleles = [l.strip() for l in f.read().split("\n") if len(l) > 0]
-    assert len(X) == len(Y)
+    assert len(X) == len(Y_IC50)
+    assert len(X) == len(Y_cat)
     assert len(X.shape) == 2
     assert len(alleles) == len(X)
-    mask = (Y > 0) & ~np.isinf(Y) & ~np.isnan(Y) & (Y< 10**7)
+    mask = (Y_IC50 > 0) & ~np.isinf(Y_IC50) & ~np.isnan(Y_IC50) & (Y_IC50< 10**7)
     X = X[mask]
-    Y = Y[mask]
+    Y_IC50 = Y_IC50[mask]
+    Y_cat = Y_cat[mask]
     alleles = [alleles[i] for i,b in enumerate(mask) if b]
-    return X, Y, alleles
+    return X, Y_IC50, Y_cat, alleles
 
 if __name__ == "__main__":
-    X, Y, alleles = load_training_data()
+    X, Y_IC50, Y_cat, alleles = load_training_data()
     print "Loaded X.shape = %s" % (X.shape,)
-    X, Y, alleles = shuffle(X, Y, alleles)
-    leave_one_out(X,Y,alleles)
+    alleles, (X, Y_IC50, Y_cat) = shuffle(alleles, X, Y_IC50, Y_cat)
+    leave_one_out(X, Y_IC50, Y_cat, alleles)

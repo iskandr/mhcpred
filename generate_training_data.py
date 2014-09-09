@@ -60,7 +60,7 @@ def generate_training_data(
 
     pos_count = (df_peptides["Positive"] + df_peptides["Positive-High"]) 
     pos_count += 0.5 * df_peptides["Positive-Intermediate"]
-    pos_count += 0.25 * df_peptides["Positive-Low"]
+    # pos_count = 0.1 * df_peptides["Positive-Low"]
     
     neg_count = df_peptides["Negative"]
 
@@ -195,6 +195,7 @@ if __name__ == '__main__':
         length=args.length,
         mhc_class = args.mhc_class,
         human=args.human)
+
     print "Generated X.shape = %s" % (X.shape,)
     print "# IC50 target values = %d" % (Y_IC50> 0).sum()
     print "# binding category values = %d" % (Y_category!=0).sum()
