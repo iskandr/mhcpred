@@ -7,7 +7,7 @@ from os.path import exists
 import subprocess
 import pandas as pd
 import logging 
-from epitopes import amino_acid 
+from epitopes import amino_acid, reduced_alphabet
 
 from dataset_helpers import filter_dataframe, extract_columns 
         
@@ -16,8 +16,6 @@ def generate_pairwise_index_data(
         df_mhc, 
         neighboring_residue_interactions=False):
 
-    
-    
     
     (peptide_alleles, peptide_seqs, category, ic50, ic50_mask) = \
         extract_columns(df_peptides)
@@ -45,6 +43,7 @@ def generate_pairwise_index_data(
     for allele, seq in zip(mhc_alleles, mhc_seqs):
         mhc_seqs_dict[allele] = seq 
     X = []
+    X_solo =[]
     Y_IC50 = []
     Y_category = []
     alleles = []
@@ -55,7 +54,10 @@ def generate_pairwise_index_data(
         amino_acid.pK_side_chain.value_dict,
         amino_acid.hydropathy.value_dict,
         amino_acid.local_flexibility.value_dict,
-        amino_acid.accessible_surface_area.value_dict
+        amino_acid.accessible_surface_area.value_dict,
+        amino_acid.polarity.value_dict,
+        reduced_alphabet.hp2,
+        reduced_alphabet.aromatic2
     ]
     for peptide_idx, allele in enumerate(peptide_alleles):
 
@@ -69,21 +71,20 @@ def generate_pairwise_index_data(
             binder = category[peptide_idx]
             print peptide_idx, allele, peptide, curr_ic50, binder
             
-            vec = []
+            pep_vec = []
+            mhc_vec = []
             for f in features:
-                vec.extend([f[x] for x in peptide])
-                vec.extend([f[x] for x in allele_seq])
-            assert vec 
-            assert len(vec) > 0
-            if len(X) > 0:
-                assert len(vec) == len(X[-1]), \
-                    "Weird vector length %d (expected %d)" % \
-                    (len(vec), len(X[-1]))
+                pep_vec.extend([f[x] for x in peptide])
+                mhc_vec.extend([f[x] for x in allele_seq])
+            
+            vec = pep_vec + mhc_vec
             X.append(np.array(vec))
+            X_solo.append(np.array(pep_vec))
             Y_IC50.append(curr_ic50)
             Y_category.append(binder)
             alleles.append(allele)
     X = np.array(X)
+    X_solo = np.array(X_solo)
     assert X.ndim == 2, "Expected two-dimensional X, got %s" % (X.shape,)
     Y_IC50 = np.array(Y_IC50)
     Y_category = np.array(Y_category)
@@ -91,7 +92,7 @@ def generate_pairwise_index_data(
     assert Y_category.ndim == 1, "Expected Y_category to be a vector"
     assert len(Y_IC50) == X.shape[0]
     assert len(Y_category) == X.shape[0]
-    return X, Y_IC50, Y_category, alleles
+    return X, X_solo, Y_IC50, Y_category, alleles
 
 
 
@@ -148,7 +149,7 @@ if __name__ == '__main__':
     df_mhc = pd.read_csv(args.mhc_seq_filename)
     print df_mhc
     print "Loaded %d MHC alleles" % len(df_mhc)
-    X, Y_IC50, Y_category, alleles = generate_pairwise_index_data(
+    X, X_pep, Y_IC50, Y_category, alleles = generate_pairwise_index_data(
         df_peptides, 
         df_mhc)
 
@@ -157,6 +158,7 @@ if __name__ == '__main__':
     print "# binding category values = %d" % (Y_category!=0).sum()
     print "Saving to disk..."
     np.save("aa_features_X.npy", X)
+    np.save("aa_features_X_pep.npy", X_pep)
     np.save("aa_features_Y_IC50.npy", Y_IC50)
     np.save("aa_features_Y_category.npy", Y_category)
     with open('aa_features_alleles.txt', 'w') as f:

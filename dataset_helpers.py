@@ -6,22 +6,46 @@ def extract_columns(df_peptides):
     ic50_mask = has_ic50 & ic50_in_range
     ic50[~ic50_mask] = 0
 
+    ic50_high = (ic50 > 0) & (ic50 <= 50)
+    ic50_mid = (ic50 > 50) & (ic50 <= 500)
+    ic50_low = (ic50 > 500) & (ic50 <= 2500)
+
     print "Keeping %d entries for IC50 data" % ic50_mask.sum()
 
-    pos_count = (df_peptides["Positive"] + df_peptides["Positive-High"]) 
-    pos_count += 0.5 * df_peptides["Positive-Intermediate"]
-    # pos_count = 0.1 * df_peptides["Positive-Low"]
+    high = df_peptides['Positive-High'] + ic50_high 
+    mid = df_peptides["Positive-Intermediate"]  + ic50_mid 
+    low = df_peptides['Positive-Low']   + ic50_low 
+    pos_unknown = df_peptides['Positive']
     
-    neg_count = df_peptides["Negative"]
+    # spread probability over multiple binding ranges 
+    # if peptide wasn't marked with a L/M/H level 
+    high += 0.35 * pos_unknown
+    mid += 0.4 * pos_unknown
+    low += 0.25 * pos_unknown
 
-    diff = (pos_count - neg_count)
-    pos_mask = diff >= 0.5
-    neg_mask = diff < -0.5
+    # we want to discretize strong binders, low binders, and non-binders 
+    neg = df_peptides["Negative"]
 
-    category_mask = (pos_mask | neg_mask)
-    print "Keeping %d entries for categorical data" % category_mask.sum()
-    category = np.sign(diff) * category_mask
+    neg_mask = (neg >= low) & (neg >= mid) & (neg >= high)
+    low_mask = ~neg_mask & (low >= mid) & (low >= high)
+    mid_mask = ~neg_mask & ~low_mask & (mid >= high)
+    high_mask = ~neg_mask & ~low_mask & ~mid_mask
 
+
+    category = np.zeros(len(high), dtype=int)
+    print category.shape, category.dtype
+    print neg_mask.shape, neg_mask.dtype
+
+    category[np.array(neg_mask)] = -1
+    category[np.array(mid_mask)] = 1
+    category[np.array(high_mask)] = 2
+
+
+
+    print "# binding category == 2", (category == 2).sum()
+    print "# binding category == 1", (category == 1).sum()
+    print "# binding category == 0", (category == 0).sum()
+    print "# binding category == -1", (category == -1).sum()
     # reformat HLA allales 'HLA-A*03:01' into 'HLA-A03:01'
     alleles = df_peptides['MHC Allele']
     epitopes = df_peptides['Epitope']

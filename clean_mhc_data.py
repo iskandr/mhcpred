@@ -68,7 +68,7 @@ def load_iedb(filename, url, only_human = False):
     mhc_class =  df['MHC']['MHC allele class']
     categories = df['Assay'][['Qualitative Measure']]
     binding_scores = df['Assay']['Quantitative measurement']
-    assay_units = df['Assay']['Units']
+    assay_units = df['Assay']['Units'].str.replace("\[nM\]", "nM")
     assay_method = df['Assay']['Method/Technique'].str.lower()
     paper = df['Reference']['Title']
 
@@ -86,11 +86,15 @@ def load_iedb(filename, url, only_human = False):
 
     return df_clean
 
+# looked at intersections of IEDB results, found 
+# purified MHC radioactivity inhibition assay 
+# correlates almost perfectly in log-scale with 
+# cell-bound MHC fluorescence assays. 
 EQUIV_ASSAY_METHODS = [
     ("purified mhc - radioactivity", "IC50"),
-    ("purified mhc - fluorescence", "KD"),
     ("cell bound mhc - fluorescence", "IC50"),
-    ("cell bound mhc - radioactivity", "IC50")
+    ("purified mhc - fluorescence", "KD"),
+    # ("cell bound mhc - radioactivity", "IC50")
 ]
     
 def group_by_peptide_and_allele(

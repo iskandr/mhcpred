@@ -144,7 +144,9 @@ def split(data, start, stop):
 def evaluate_dataset(
         X_idx, Y_IC50, Y_cat, train_mask, allele, 
         initial_coef, n_iters,
-        binding_cutoff = 500):
+        binding_cutoff = 500, 
+        last_iter_rf = False,
+        last_iter_average=True):
 
     coeff_vec = initial_coef
     cat_mask = np.abs(Y_cat) > 0
@@ -169,6 +171,7 @@ def evaluate_dataset(
         shuffle = True, 
         n_iter = sgd_iters, 
         alpha = 0.0005) 
+    preds = []
     for i in xrange(n_iters):
         print 
         print "- fitting regression model #%d (%s)" % ((i + 1), allele)
@@ -187,9 +190,31 @@ def evaluate_dataset(
         last_iter = (i == n_iters - 1)
         
         
+        if last_iter and last_iter_rf:
+            drop_mask = np.abs(model_weights) < 0.0000001
+            print "Keeping %d / %d features: %s" % (
+                (~drop_mask).sum(), len(drop_mask), (~drop_mask).nonzero()
+            )
+            X_train = X_train[:, ~drop_mask]
+            X_test = X_test[:, ~drop_mask]
+            model = sklearn.ensemble.RandomForestClassifier(200)
+
+            
         model.fit(X_train, train_lte)
-        
+            
         pred = model.predict_proba(X_test)[:, 1]
+        preds.append(pred)
+
+        if last_iter and last_iter_average:
+            pred = np.zeros_like(pred)
+            n = len(preds)
+            total_weight = 0
+            for i, p in enumerate(preds):
+                w = (float(i+1) / (n+1))
+                pred += w *  p
+                total_weight += w
+            pred /= w
+
         pred_lte = pred >= 0.5
         print "Predicted binders fraction", np.mean(pred_lte)
         
@@ -243,9 +268,9 @@ def make_aa_hydropathy_product_dictionary():
     return result
 
 def leave_one_out(X_idx, Y_IC50, Y_cat, alleles, 
-                  n_iters = 5, 
+                  n_iters = 20, 
                   binding_cutoff = 500,
-                  output_file_name = "cv_results.csv"):
+                  output_file_name = "cv_results_4.csv"):
     """
     X_idx : 2d array of integers with shape = (n_samples, n_features) 
         Elements are indirect references to elements of the 

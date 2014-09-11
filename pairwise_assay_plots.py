@@ -5,8 +5,7 @@ import seaborn
 CUTOFF = 50000
 if __name__ == "__main__":
 
-    df = pd.read_csv('mhc.csv')
-    df['Assay Value'] = df['IC50']
+    df = pd.read_csv('mhc.csv')    
     method_col = df['Assay Method'].str.lower()
 
     dfs = {}
@@ -52,15 +51,19 @@ if __name__ == "__main__":
                 )
 
                 n = len(joined)
+                print "Intersection of %s and %s has %d entries" % (
+                    lsuffix, rsuffix, n
+                )
+                    
                 if n > 0:
-                    print "Intersection of %s and %s has %d entries" % (
-                        lsuffix, rsuffix, n
-                    )
                     l = joined[lkey]
                     r = joined[rkey]
                     diff = (50000 ** l) - (50000 ** r)
-                    print " -- Median of absolute differences: ", \
-                        np.abs(diff.median())
+                    abs_diff = np.abs(diff)
+                    print "-- Diff: Mean %f, Std %f", np.mean(diff), np.std(diff)
+                    print "-- Abs Diff: Min %f, Max %f, Median %f"  %(
+                        np.min(abs_diff), np.max(abs_diff), np.median(abs_diff)
+                    )
                     if n >= 25:
                         seaborn.jointplot(
                             lkey, 
