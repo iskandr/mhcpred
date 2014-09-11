@@ -135,7 +135,7 @@ def leave_one_out(
                 X_test /= Xs
             
 
-            n_trees = 250
+            n_trees = 200
             model = sklearn.ensemble.RandomForestClassifier(n_trees)
             if len(X_test) >= 25:
                 solo_aucs = sklearn.cross_validation.cross_val_score(
@@ -144,8 +144,8 @@ def leave_one_out(
                     Y_lte_test, 
                     scoring="roc_auc") 
                 solo_auc = np.mean(solo_aucs)
-                print "--- Solo CV for %s: %0.4f" % (allele, solo_auc)
-            k = 10
+                print "--- Solo CV AUC for %s: %0.4f" % (allele, solo_auc)
+            k = 50
             models = [sklearn.ensemble.RandomForestClassifier(n_trees) for _ in xrange(k)]
             cluster = sklearn.cluster.MiniBatchKMeans(k)
             print "--- fitting K-means"

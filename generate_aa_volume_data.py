@@ -16,9 +16,6 @@ def generate_pairwise_index_data(
         df_mhc, 
         neighboring_residue_interactions=False):
 
-    
-    
-    
     (peptide_alleles, peptide_seqs, category, ic50, ic50_mask) = \
         extract_columns(df_peptides)
     print "%d unique peptide alleles" % len(peptide_alleles.unique())
