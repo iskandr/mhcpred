@@ -21,6 +21,8 @@ def download_iedb_database(filename, url):
     return pd.read_csv(filename, error_bad_lines=False, header=[0,1])
     
 
+
+
 def load_iedb(filename, url, only_human = False):
 
     df = download_iedb_database(filename, url)
@@ -67,16 +69,16 @@ def load_iedb(filename, url, only_human = False):
     categories = df['Assay'][['Qualitative Measure']]
     binding_scores = df['Assay']['Quantitative measurement']
     assay_units = df['Assay']['Units']
-    assay_method = df['Assay']['Method/Technique']
+    assay_method = df['Assay']['Method/Technique'].str.lower()
     paper = df['Reference']['Title']
 
     df_clean = pd.DataFrame({})
     df_clean['Epitope'] = epitopes
     df_clean['MHC Allele'] = alleles 
     df_clean['MHC Class'] = mhc_class
-    df_clean['IC50'] =  binding_scores
-    df_clean['Assay Units'] = assay_units
     df_clean['Assay Method'] = assay_method
+    df_clean['Assay Units'] = assay_units
+    df_clean['Assay Value'] =  binding_scores
     df_clean['Binder'] = categories
     df_clean['Paper'] = paper 
 
@@ -85,8 +87,12 @@ def load_iedb(filename, url, only_human = False):
     return df_clean
 
     
-def group_by_peptide_and_allele(df_peptides, max_ic50 = 10**7):
-
+def group_by_peptide_and_allele(
+        df_peptides, 
+        max_ic50 = 10**7, 
+        normalize_ic50 = True,
+        use_ec50 = True,
+        use_kd = True):
     records = []
 
     positive_binding_categories = [

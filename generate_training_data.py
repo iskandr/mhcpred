@@ -9,48 +9,7 @@ import subprocess
 import pandas as pd
 import logging 
 
-        
-def generate_training_data(
-        df_peptides,
-        df_mhc, 
-        neighboring_residue_interactions=False,
-        mhc_class="I",
-        length=9,
-        human=False):
-
-    df_peptides['MHC Allele'] = \
-        df_peptides['MHC Allele'].str.replace('*', '').str.strip()
-    
-    if human:
-        human_mask = df_peptides["MHC Allele"].str.startswith("HLA")
-        print "Keeping %d / %d  entries for human alleles" % (
-            human_mask.sum(),
-            len(human_mask),
-        )
-        df_peptides = df_peptides[human_mask]
-        
-    if mhc_class:
-        mhc_class_mask = df_peptides['MHC Class'] == mhc_class
-        print "Keeping %d / %d entries for MHC class = %s" % (
-            mhc_class_mask.sum(),
-            len(mhc_class_mask),
-            mhc_class
-        )
-        df_peptides = df_peptides[mhc_class_mask]
-
-    if length:
-        length_mask = df_peptides.Epitope.str.len() == length
-        print "Keeping %d / %d entries with length = %d" % (
-            length_mask.sum(), 
-            len(length_mask),
-            length
-        )
-        df_peptides = df_peptides[length_mask]
-    else:
-        df_peptides = df_peptides[df_peptides.Epitope.str.len() > 5]
-
-    df_peptides = df_peptides.reset_index()
-
+def extract_columns(df_peptides):
     ic50 = df_peptides["IC50_Median"]
     has_ic50 = df_peptides["IC50_Count"] > 0
     ic50_in_range = df_peptides["IC50_Median"] < 10**7
@@ -73,12 +32,21 @@ def generate_training_data(
     category = np.sign(diff) * category_mask
 
     # reformat HLA allales 'HLA-A*03:01' into 'HLA-A03:01'
-    peptide_alleles = df_peptides['MHC Allele']
-    peptide_seqs = df_peptides['Epitope']
+    alleles = df_peptides['MHC Allele']
+    epitopes = df_peptides['Epitope']
+    return alleles, epitopes, category, ic50, ic50_mask 
+        
+def generate_pairwise_index_data(
+        df_peptides,
+        df_mhc, 
+        neighboring_residue_interactions=False):
+
+    
     
     
     print "%d unique peptide alleles" % len(peptide_alleles.unique())
-    
+    (peptide_alleles, peptide_seqs, category, ic50, ic50_mask) = \
+        extract_columns(df_peptides)
 
     mhc_alleles = df_mhc['Allele'].str.replace('*', '')
     mhc_seqs = df_mhc['Residues']
@@ -116,7 +84,7 @@ def generate_training_data(
             n_mhc_letters = len(allele_seq)
             curr_ic50 = ic50[peptide_idx] * ic50_mask[peptide_idx]
             binder = category[peptide_idx]
-            print peptide_idx, allele, peptide, curr_ic50, binder, pos_count[peptide_idx], neg_count[peptide_idx]
+            print peptide_idx, allele, peptide, curr_ic50, binder
             
             #print peptide_idx, allele, peptide, allele_seq, ic50
             vec = [AMINO_ACID_PAIR_POSITIONS[peptide_letter + mhc_letter] 
@@ -148,7 +116,50 @@ def generate_training_data(
     assert len(Y_category) == X.shape[0]
     return X, Y_IC50, Y_category, alleles
 
+def filter_dataframe(
+        df_peptides, 
+        human = False, 
+        length = None, 
+        mhc_class = "I"):
 
+    df_peptides['MHC Allele'] = \
+        df_peptides['MHC Allele'].str.replace('*', '').str.strip()
+    
+    if human:
+        human_mask = df_peptides["MHC Allele"].str.startswith("HLA")
+        print "Keeping %d / %d  entries for human alleles" % (
+            human_mask.sum(),
+            len(human_mask),
+        )
+        df_peptides = df_peptides[human_mask]
+        
+    if mhc_class:
+        mhc_class_mask = df_peptides['MHC Class'] == mhc_class
+        print "Keeping %d / %d entries for MHC class = %s" % (
+            mhc_class_mask.sum(),
+            len(mhc_class_mask),
+            mhc_class
+        )
+        df_peptides = df_peptides[mhc_class_mask]
+
+    if length:
+        length_mask = df_peptides.Epitope.str.len() == length
+        print "Keeping %d / %d entries with length = %d" % (
+            length_mask.sum(), 
+            len(length_mask),
+            length
+        )
+        df_peptides = df_peptides[length_mask]
+    else:
+        df_peptides = df_peptides[df_peptides.Epitope.str.len() > 5]
+
+    df_peptides = df_peptides.reset_index()
+    return df_peptides   
+
+def generate_aa_feature_data(df_peptides, df_mhc):
+    alleles, epitopes, category, ic50, ic50_mask = extract_columns(df_peptides)
+    for i, epitope in enumerate(epitopes):
+        allele = alleles.irow(i)
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
@@ -165,6 +176,11 @@ if __name__ == '__main__':
         default = "MHC_aa_seqs.csv")
 
     parser.add_argument(
+        "--pairwise-index-features",
+        action = "store_true",
+        default = False
+    )
+    parser.add_argument(
         "--neighboring-residues", 
         action='store_true', 
         default=False)
@@ -172,7 +188,7 @@ if __name__ == '__main__':
     parser.add_argument(
         "--length",
         type=int, 
-        default=9)
+        default=None)
 
     parser.add_argument("--human", 
         default = False, 
@@ -187,14 +203,25 @@ if __name__ == '__main__':
     print "Loaded %d peptide/allele entries", len(df_peptides)
     print df_peptides.columns
     
+    length = args.length
+    if not length and args.pairwise_index_features:
+        length = 9 
+    df_peptides = filter_dataframe(
+        df_peptides,
+        mhc_class = args.mhc_class, 
+        length = args.length, 
+        human = args.human)
+
     df_mhc = pd.read_csv(args.mhc_seq_filename)
+    print df_mhc
     print "Loaded %d MHC alleles" % len(df_mhc)
 
-    X, Y_IC50, Y_category, alleles = generate_training_data(
-        df_peptides, df_mhc, 
-        length=args.length,
-        mhc_class = args.mhc_class,
-        human=args.human)
+    if args.pairwise_index_features:  
+        X, Y_IC50, Y_category, alleles = generate_pairwise_index_data(
+            df_peptides, df_mhc)
+    else:
+        X, Y_IC50, Y_category, alleles = \
+            generate_aa_feature_data(df_peptides, df_mhc)
 
     print "Generated X.shape = %s" % (X.shape,)
     print "# IC50 target values = %d" % (Y_IC50> 0).sum()
