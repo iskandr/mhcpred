@@ -13,6 +13,7 @@ from sklearn.linear_model import LassoCV
 import sklearn.svm 
 import sklearn.ensemble
 import sklearn.decomposition 
+import sklearn.cluster 
 
 from log_linear_regression import LogLinearRegression
 from two_pass_regressor import TwoPassRegressor
@@ -47,7 +48,8 @@ def leave_one_out(
         X, X_pep, 
         Y_IC50, Y_cat, alleles, 
         binding_cutoff = 500,
-        normalize = False,
+        normalize = True,
+        human = False,
         output_file_name = "aa_features_cv_results.csv"):
     """
     X_idx : 2d array of integers with shape = (n_samples, n_features) 
@@ -68,13 +70,19 @@ def leave_one_out(
         Number of training iterations to refine feature matrix 
     """
 
-
-    #pca = sklearn.decomposition.RandomizedPCA(100)
     std = X.std(axis=0)
     bad_mask = std < 0.01
     print "Dropping low-variance columns:", bad_mask.nonzero()
     X = X[:, ~bad_mask]
 
+    if human:
+        human_mask = [allele.startswith("HLA") for allele in alleles]
+        human_mask = np.array(human_mask)
+        X = X[human_mask]
+        X_pep = X_pep[human_mask]
+        Y_IC50 = Y_IC50[human_mask]
+        Y_cat = Y_cat[human_mask]
+        alleles = [allele for allele in alleles if allele.startswith("HLA")]
     n_samples = len(X)
     accuracies = []
     sensitivities = []
@@ -126,7 +134,9 @@ def leave_one_out(
                 X_train /= Xs 
                 X_test /= Xs
             
-            model = sklearn.ensemble.RandomForestClassifier(300)
+
+            n_trees = 250
+            model = sklearn.ensemble.RandomForestClassifier(n_trees)
             if len(X_test) >= 25:
                 solo_aucs = sklearn.cross_validation.cross_val_score(
                     model, 
@@ -135,9 +145,28 @@ def leave_one_out(
                     scoring="roc_auc") 
                 solo_auc = np.mean(solo_aucs)
                 print "--- Solo CV for %s: %0.4f" % (allele, solo_auc)
-            model.fit(X_train, Y_train)
-            probs = model.predict_proba(X_test)
-            pred = probs[:, -1] + probs[:, -2]
+            k = 10
+            models = [sklearn.ensemble.RandomForestClassifier(n_trees) for _ in xrange(k)]
+            cluster = sklearn.cluster.MiniBatchKMeans(k)
+            print "--- fitting K-means"
+            labels = cluster.fit_predict(X_train)
+            for i in xrange(k):
+                subset_mask = labels == i
+                subset_X = X_train[subset_mask]
+                subset_Y = Y_train[subset_mask]
+                models[i].fit(subset_X, subset_Y)
+            test_labels = cluster.predict(X_test)
+            prob = np.zeros( (len(Y_test), 4),  dtype=float)
+            for i, model in enumerate(models):
+                test_cluster_mask = test_labels == i
+                ni = test_cluster_mask.sum()
+                if ni > 0:
+                    print "----- cluster %d matches %d / %d test rows" % (
+                        i, ni, len(test_labels)
+                    ) 
+                    pi = model.predict_proba(X_test[test_cluster_mask])
+                    prob[test_cluster_mask, :] = pi
+            pred = prob[:, -1] + prob[:, -2]
             pred_lte =  pred > 0.5
             auc = sklearn.metrics.roc_auc_score(Y_lte_test, pred)
             

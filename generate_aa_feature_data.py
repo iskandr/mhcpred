@@ -56,8 +56,6 @@ def generate_pairwise_index_data(
         amino_acid.local_flexibility.value_dict,
         amino_acid.accessible_surface_area.value_dict,
         amino_acid.polarity.value_dict,
-        reduced_alphabet.hp2,
-        reduced_alphabet.aromatic2
     ]
     for peptide_idx, allele in enumerate(peptide_alleles):
 
