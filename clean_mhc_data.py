@@ -86,13 +86,38 @@ def load_iedb(filename, url, only_human = False):
 
     return df_clean
 
+EQUIV_ASSAY_METHODS = [
+    ("purified mhc - radioactivity", "IC50"),
+    ("purified mhc - fluorescence", "KD"),
+    ("cell bound mhc - fluorescence", "IC50"),
+    ("cell bound mhc - radioactivity", "IC50")
+]
     
 def group_by_peptide_and_allele(
         df_peptides, 
-        max_ic50 = 10**7, 
-        normalize_ic50 = True,
-        use_ec50 = True,
-        use_kd = True):
+        max_ic50 = 10**7,
+        assay_methods_and_units = EQUIV_ASSAY_METHODS):
+
+
+    df_peptides['Assay Method'] = df_peptides['Assay Method'].str.lower()
+    print "Filtering assay methods"
+    assay_mask = np.zeros(len(df_peptides), dtype=bool)
+    for (method, units) in assay_methods_and_units:
+        mask = df_peptides['Assay Method'].str.contains(method, na=False)
+        mask &= df_peptides['Assay Units'].str.contains(units, na=False)
+        mask &= df_peptides['Assay Units'].str.contains('nM', na=False)
+        print "-- %s : %s nM: %d entries" % (
+            method, units, mask.sum()
+        )
+        assay_mask |= mask
+    assay_mask &= ~df_peptides['Assay Value'].isnull()
+    assay_mask &= df_peptides['Assay Value'] < max_ic50
+        
+    print "%d entries with IC50 (or equivalent) assay values" % \
+        assay_mask.sum()
+
+    df_peptides['Assay Mask'] = assay_mask
+    
     records = []
 
     positive_binding_categories = [
@@ -117,16 +142,8 @@ def group_by_peptide_and_allele(
             record["Negative"] = (group["Binder"] == "Negative").sum()
             record['Positive-All'] = \
                 sum(record[l] for l in positive_binding_categories)
-            ic50 = group['IC50']
-
-            mask = ~ic50.isnull()
-            mask &= ic50 < max_ic50
-            
-            # should we further restrict to only IC50 results? 
-            # are EC50, Kd, and IC50 comparable?
-            units = group['Assay Units']
-            mask &= units.str.contains('nM', na=False)
-            
+            ic50 = group['Assay Value']
+            mask = group['Assay Mask']
             ic50 = ic50[mask]
             record['IC50_Count'] = len(ic50)
             record['IC50_Min'] = ic50.min()

@@ -169,7 +169,6 @@ def evaluate_dataset(
         shuffle = True, 
         n_iter = sgd_iters, 
         alpha = 0.0005) 
-    #model = sklearn.linear_model.LogisticRegression()
     for i in xrange(n_iters):
         print 
         print "- fitting regression model #%d (%s)" % ((i + 1), allele)
@@ -287,7 +286,7 @@ def leave_one_out(X_idx, Y_IC50, Y_cat, alleles,
     np.random.seed(1)
     results = {}
     output_file = open(output_file_name, 'w')
-    output_file.write("Allele,PCC,AUC,Sensitivity,Specificity\n")
+    output_file.write("Allele,Accuracy,AUC,Sensitivity,Specificity\n")
     try:
         for allele in sorted(unique_human_alleles):
             print 
@@ -316,8 +315,8 @@ def leave_one_out(X_idx, Y_IC50, Y_cat, alleles,
     output_file.close()
     print "Results:"
     for allele in sorted(results.keys()):
-        (pcc, auc) = results[allele]
-        print "%s PCC %0.5f AUC %0.5f" % (allele, pcc, auc)
+        (accuracy, auc) = results[allele]
+        print "%s Accuracy %0.5f AUC %0.5f" % (allele, accuracy, auc)
     print "Overall AUC", np.median(aucs)
     print "Overall CV sensitivity =", np.median(sensitivities)
     print "Overall CV specificity =", np.median(specificities)
@@ -344,7 +343,7 @@ def load_training_data():
         alleles = [l.strip() for l in f.read().split("\n") if len(l) > 0]
     assert len(X) == len(Y_IC50)
     assert len(X) == len(Y_cat)
-    assert len(X.shape) == 2
+    assert len(X.shape) == 2, X.shape
     assert len(alleles) == len(X)
     mask = (Y_IC50 > 0) & ~np.isinf(Y_IC50) & ~np.isnan(Y_IC50) & (Y_IC50< 10**7)
     X = X[mask]
