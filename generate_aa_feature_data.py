@@ -11,7 +11,7 @@ from epitopes import amino_acid, reduced_alphabet
 
 from dataset_helpers import filter_dataframe, extract_columns 
         
-def generate_pairwise_index_data(
+def generate_aa_feature_data(
         df_peptides,
         df_mhc, 
         neighboring_residue_interactions=False):
@@ -94,10 +94,6 @@ def generate_pairwise_index_data(
 
 
 
-def generate_aa_feature_data(df_peptides, df_mhc):
-    alleles, epitopes, category, ic50, ic50_mask = extract_columns(df_peptides)
-    for i, epitope in enumerate(epitopes):
-        allele = alleles.irow(i)
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
@@ -147,7 +143,7 @@ if __name__ == '__main__':
     df_mhc = pd.read_csv(args.mhc_seq_filename)
     print df_mhc
     print "Loaded %d MHC alleles" % len(df_mhc)
-    X, X_pep, Y_IC50, Y_category, alleles = generate_pairwise_index_data(
+    X, X_pep, Y_IC50, Y_category, alleles = generate_aa_feature_data(
         df_peptides, 
         df_mhc)
 

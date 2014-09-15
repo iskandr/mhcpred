@@ -43,6 +43,42 @@ from selective_regressor import SelectiveRegressor
 from generate_training_data import generate_training_data
 from amino_acids import AMINO_ACID_LETTERS, AMINO_ACID_PAIRS, AMINO_ACID_PAIR_POSITIONS
 
+class TreeEnsemble(object):
+
+    def __init__(self, n_estimators = 100):
+        self.rf_binary_med = sklearn.ensemble.RandomForestClassifier(
+            n_estimators = n_estimators)
+        self.rf_binary_high = sklearn.ensemble.RandomForestClassifier(
+            n_estimators = n_estimators)
+        self.rf4 = sklearn.ensemble.RandomForestClassifier(
+            n_estimators = n_estimators)
+        #self.et_binary_med = sklearn.ensemble.ExtraTreesClassifier(
+        #    n_estimators = n_estimators)
+        #self.et_binary_high = sklearn.ensemble.ExtraTreesClassifier(
+        #    n_estimators = n_estimators)
+        #self.et4 = sklearn.ensemble.ExtraTreesClassifier(
+        #    n_estimators = n_estimators)
+
+    def fit(self, X, Y):
+        Y_binary_med = Y>=1
+        Y_binary_high = Y>1
+        self.rf_binary_high.fit(X, Y_binary_high)
+        self.rf_binary_med.fit(X, Y_binary_med)
+        self.rf4.fit(X,Y)
+        #self.et_binary_high.fit(X, Y_binary_high)
+        #self.et_binary_med.fit(X, Y_binary_med)
+        #self.et4.fit(X,Y)
+
+    def prob_binder(self, X):
+        p = self.rf_binary_med.predict_proba(X)[:, -1]
+        p += self.rf_binary_high.predict_proba(X)[:, -1]
+        p_rf4 = self.rf4.predict_proba(X)
+        p += (p_rf4[:, -2] + p_rf4[:, -1])
+        return p / 3
+
+
+
+
 
 def leave_one_out(
         X, X_pep, 
@@ -50,6 +86,7 @@ def leave_one_out(
         binding_cutoff = 500,
         normalize = True,
         human = False,
+        kmeans = False,
         output_file_name = "aa_features_cv_results.csv"):
     """
     X_idx : 2d array of integers with shape = (n_samples, n_features) 
@@ -119,6 +156,7 @@ def leave_one_out(
             X_test = X[allele_mask]
             X_test_pep = X_pep[allele_mask]
             Y_train = Y_cat[not_allele_mask]
+
             Y_test = Y_cat[allele_mask]
             Y_lte_train = Y_train > 0
             Y_lte_test = Y_test > 0
@@ -135,8 +173,9 @@ def leave_one_out(
                 X_test /= Xs
             
 
-            n_trees = 200
-            model = sklearn.ensemble.RandomForestClassifier(n_trees)
+            n_trees = 150
+            model = sklearn.ensemble.RandomForestClassifier(n_estimators = n_trees)
+            #model = sklearn.linear_model.SGDClassifier(loss='log', penalty = 'l1', alpha = 0.025, n_iter = 15)
             if len(X_test) >= 25:
                 solo_aucs = sklearn.cross_validation.cross_val_score(
                     model, 
@@ -145,28 +184,35 @@ def leave_one_out(
                     scoring="roc_auc") 
                 solo_auc = np.mean(solo_aucs)
                 print "--- Solo CV AUC for %s: %0.4f" % (allele, solo_auc)
-            k = 50
-            models = [sklearn.ensemble.RandomForestClassifier(n_trees) for _ in xrange(k)]
-            cluster = sklearn.cluster.MiniBatchKMeans(k)
-            print "--- fitting K-means"
-            labels = cluster.fit_predict(X_train)
-            for i in xrange(k):
-                subset_mask = labels == i
-                subset_X = X_train[subset_mask]
-                subset_Y = Y_train[subset_mask]
-                models[i].fit(subset_X, subset_Y)
-            test_labels = cluster.predict(X_test)
-            prob = np.zeros( (len(Y_test), 4),  dtype=float)
-            for i, model in enumerate(models):
-                test_cluster_mask = test_labels == i
-                ni = test_cluster_mask.sum()
-                if ni > 0:
-                    print "----- cluster %d matches %d / %d test rows" % (
-                        i, ni, len(test_labels)
-                    ) 
-                    pi = model.predict_proba(X_test[test_cluster_mask])
-                    prob[test_cluster_mask, :] = pi
-            pred = prob[:, -1] + prob[:, -2]
+            if kmeans:
+                k = 10
+                models = [sklearn.ensemble.RandomForestClassifier(n_trees) for _ in xrange(k)]
+                cluster = sklearn.cluster.MiniBatchKMeans(k)
+                print "--- fitting K-means"
+                labels = cluster.fit_predict(X_train)
+                for i in xrange(k):
+                    subset_mask = labels == i
+                    subset_X = X_train[subset_mask]
+                    subset_Y = Y_train[subset_mask]
+                    models[i].fit(subset_X, subset_Y)
+                test_labels = cluster.predict(X_test)
+                prob = np.zeros( (len(Y_test), 4),  dtype=float)
+                for i, model in enumerate(models):
+                    test_cluster_mask = test_labels == i
+                    ni = test_cluster_mask.sum()
+                    if ni > 0:
+                        print "----- cluster %d matches %d / %d test rows" % (
+                            i, ni, len(test_labels)
+                        ) 
+                        pi = model.predict_proba(X_test[test_cluster_mask])
+                        prob[test_cluster_mask, :] = pi
+                pred = prob[:, -1] + prob[:, -2]
+            else:
+                model = TreeEnsemble(n_estimators = n_trees)
+                model.fit(X_train, Y_train)
+                pred = model.prob_binder(X_test)
+                #probs = model.predict_proba(X_test)
+                #pred = probs[:, -1] + probs[:, -2]
             pred_lte =  pred > 0.5
             auc = sklearn.metrics.roc_auc_score(Y_lte_test, pred)
             

@@ -1,7 +1,7 @@
 import pandas as pd 
 import numpy as np 
 import seaborn
-
+import scipy
 CUTOFF = 50000
 if __name__ == "__main__":
 
@@ -30,18 +30,21 @@ if __name__ == "__main__":
     seen = set([]) 
     for (k1,s1) in dfs.iteritems():
         lsuffix =  "-".join(k1)
-        lkey = "Assay Value " + lsuffix 
+        lkey = "Log Assay Value " + lsuffix 
         df1 = s1.reset_index()
-        df1 = df1[df1['Assay Value'] <= CUTOFF]
-        df1['Assay Value'] = np.log(df1['Assay Value']) / np.log(CUTOFF)
+	# get rid of lower bound assay values
+	bad_mask1 = (df1['Assay Value'] % 5000) == 0
+        df1 = df1[~bad_mask1]
+        df1['Log Assay Value'] = np.log(df1['Assay Value']) / np.log(CUTOFF)
         for (k2, s2) in dfs.iteritems():
             if k1 != k2 and frozenset([k1, k2]) not in seen:
                 seen.add(frozenset([k1, k2]))
                 rsuffix =  "-".join(k2)
-                rkey = "Assay Value " + rsuffix
+                rkey = "Log Assay Value " + rsuffix
                 df2 = s2.reset_index()
-                df2 = df2[df2['Assay Value'] <= CUTOFF]
-                df2['Assay Value']  = np.log(df2['Assay Value']) / np.log(CUTOFF)
+		bad_mask2 = (df2['Assay Value'] % 5000) == 0
+		df2 = df2[~bad_mask2]
+                df2['Log Assay Value']  = np.log(df2['Assay Value']) / np.log(CUTOFF)
                 joined = pd.merge(
                     df1, 
                     df2, 
@@ -51,18 +54,20 @@ if __name__ == "__main__":
                 )
 
                 n = len(joined)
-                print "Intersection of %s and %s has %d entries" % (
-                    lsuffix, rsuffix, n
-                )
-                    
+                   
                 if n > 0:
+	            print joined[['MHC Allele', 'Epitope', 'Assay Value ' + lsuffix, 'Assay Value ' + rsuffix]] 
+                    print "Intersection of %s and %s has %d entries" % (
+                        lsuffix, rsuffix, n
+                    )
                     l = joined[lkey]
                     r = joined[rkey]
                     diff = (50000 ** l) - (50000 ** r)
                     abs_diff = np.abs(diff)
-                    print "-- Diff: Mean %f, Std %f", np.mean(diff), np.std(diff)
-                    print "-- Abs Diff: Min %f, Max %f, Median %f"  %(
-                        np.min(abs_diff), np.max(abs_diff), np.median(abs_diff)
+                    print "-- Abs Diff: 5th %f, 95th %f,  Median %f"  %(
+                        scipy.percentile(abs_diff, 5), 
+                        scipy.percentile(abs_diff, 95), 
+                        np.median(abs_diff)
                     )
                     if n >= 25:
                         seaborn.jointplot(
