@@ -140,6 +140,14 @@ def leave_one_out(
     maxval = 20000
     Y_IC50[Y_IC50>maxval] = maxval
     
+    n_trees = 150
+    model = sklearn.ensemble.RandomForestClassifier(n_estimators = n_trees)
+    overall_scores = sklearn.cross_validation.cross_val_score(
+                    model, 
+                    X, 
+                    Y_cat >= 1, 
+                    scoring="roc_auc", cv = 5)  
+    print "Overall 5-fold cross-validation %0.4f" % np.mean(overall_scores)
     try:
         for allele in sorted(unique_human_alleles):
              
@@ -173,9 +181,6 @@ def leave_one_out(
                 X_test /= Xs
             
 
-            n_trees = 150
-            model = sklearn.ensemble.RandomForestClassifier(n_estimators = n_trees)
-            #model = sklearn.linear_model.SGDClassifier(loss='log', penalty = 'l1', alpha = 0.025, n_iter = 15)
             if len(X_test) >= 25:
                 solo_aucs = sklearn.cross_validation.cross_val_score(
                     model, 
@@ -208,9 +213,9 @@ def leave_one_out(
                         prob[test_cluster_mask, :] = pi
                 pred = prob[:, -1] + prob[:, -2]
             else:
-                model = TreeEnsemble(n_estimators = n_trees)
-                model.fit(X_train, Y_train)
-                pred = model.prob_binder(X_test)
+                allele_model = TreeEnsemble(n_estimators = n_trees)
+                allele_model.fit(X_train, Y_train)
+                pred = allele_model.prob_binder(X_test)
                 #probs = model.predict_proba(X_test)
                 #pred = probs[:, -1] + probs[:, -2]
             pred_lte =  pred > 0.5
