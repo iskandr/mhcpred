@@ -31,7 +31,7 @@ parser.add_argument(
 parser.add_argument(
     "--require-substring",
     type=str,
-    default=[],
+    default="",
     help="Allele name must contain this substring"
 )
 
@@ -88,7 +88,6 @@ class Aligner(object):
                 best_score = n_matches
                 aligned = candidate
 
-
         # after a hopefully faster first phase of getting rid of a
         # non-matching prefix, follow up with approximate-match iterative
         # deletions until same length as reference
@@ -100,7 +99,8 @@ class Aligner(object):
             best_i = 0
             best_j = 0
             for i in xrange(len(aligned)):
-                for j in xrange(i+1, min(len(aligned), i+maxdels_per_iter)):
+                maxdels = min(len(aligned) - len(ref), maxdels_per_iter)
+                for j in xrange(i+1, min(len(aligned), i+maxdels+1)):
                     candidate = aligned[:i] + aligned[j:]
                     score = sum(coeffs[x][y] for (x,y) in izip(candidate, ref))
                     delsize = j - i
@@ -151,6 +151,7 @@ if __name__ == '__main__':
                 x if x != y else "_" for (x,y) in zip(aligned_seq,ref)
             )
             print mismatch
+            assert len(aligned_seq) == len(ref)
             aligned[allele] = aligned_seq
 
     with open(args.output_file, 'w') as f:
