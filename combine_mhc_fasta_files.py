@@ -14,24 +14,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import argparse 
+import argparse
 
 from Bio.SeqIO.FastaIO import FastaIterator
 import pandas as pd
-from immuno.common import find_paths
-
+from parsing import parse_fasta_mhc_dirs
 parser = argparse.ArgumentParser()
 
 parser.add_argument(
     "--input-dir",
-    required = True, 
-    type = str, 
+    required = True,
+    type = str,
     help = "Path to FASTA files containing MHC protein sequences"
 )
 
 parser.add_argument(
     "--output-file",
-    type = str, 
+    type = str,
     help = "Path to output FASTA file"
 )
 
@@ -44,7 +43,7 @@ parser.add_argument(
 
 parser.add_argument(
     "--exclude",
-    type = str, 
+    type = str,
     help = "Exclude alleles which contain this substring",
     default = "",
 )
@@ -53,44 +52,13 @@ parser.add_argument(
 
 if __name__ == '__main__':
     args = parser.parse_args()
-    paths = find_paths(
-        directory_string = args.input_dir,
-        extensions = [".fa", ".fasta"])
-    assert len(paths) > 0, "No files found"
+    exclude_alleles = args.exclude.split(",")
+    seqs = parse_fasta_mhc_dirs(
+        [args.dir],
+        min_length = args.min_length,
+        exclude_alleles=exclude_alleles)
 
-
-    seqs = {}
-    for path in paths:
-        with open(path, 'r') as f:
-            for record in FastaIterator(f):
-                desc = record.description
-                fields = desc.split(" ")
-                if len(fields) ==1:
-                    allele = fields[0]
-                else:
-                    allele = fields[1]
-                    if "-" not in allele and fields[0].startswith("HLA"):
-                        allele = "HLA-" + allele 
-                if allele.endswith("N") or allele.endswith("Q"): 
-                    continue
-                if args.exclude and args.exclude in allele:
-                    print "Skipping excluded allele", allele 
-                    continue 
-
-                allele = allele.replace("_", "*")
-                
-                seq = str(record.seq)
-                if len(seq) < args.min_length:
-                    print "Skipping", allele, "length =", len(seq)
-                    continue 
-
-                allele = ":".join(allele.split(":")[:2])
-                if allele in seq:
-                    # expect all 4-digit alleles to correspond to the same
-                    # protein sequence
-                    assert seqs[allele] == seq, (record, seq)
-                else:
-                    seqs[allele] = seq
+    assert len(seqs) > 0, "No sequences found in directory %s" % args.dir
     if args.output_file:
         with open(args.output_file, 'w') as f:
             for allele in sorted(seqs.keys()):
@@ -99,5 +67,4 @@ if __name__ == '__main__':
     else:
         for k,v in sorted(seqs.iteritems()):
             print ">",k
-            print v 
-    
+            print v

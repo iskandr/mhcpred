@@ -1,4 +1,5 @@
 import numpy as np
+
 def extract_columns(df_peptides):
     ic50 = np.array(df_peptides["IC50_Median"])
     has_ic50 = np.array(df_peptides["IC50_Count"] > 0)
@@ -17,8 +18,8 @@ def extract_columns(df_peptides):
     low = df_peptides['Positive-Low']   + ic50_low 
     pos_unknown = df_peptides['Positive']
     
-    # spread probability over multiple binding ranges 
-    # if peptide wasn't marked with a L/M/H level 
+    # spread probability over multiple binding ranges
+    # if peptide wasn't marked with a L/M/H level
     high += 0.35 * pos_unknown
     mid += 0.4 * pos_unknown
     low += 0.25 * pos_unknown

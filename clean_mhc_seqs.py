@@ -1,4 +1,4 @@
-from collections import Counter 
+from collections import Counter
 
 if __name__ == '__main__':
 
@@ -16,7 +16,7 @@ if __name__ == '__main__':
 
 	first = strings[0]
 	keep_position = [True] * len(first)
-	
+
 	for i in xrange(len(first)):
 		counter = Counter()
 		for s in strings:
@@ -25,13 +25,13 @@ if __name__ == '__main__':
 		total = sum(counter.values())
 		most_common_key, most_common_count = counter.most_common()[0]
 		fraction =  float(most_common_count)/total
-		print i, most_common_key, most_common_count, "/", total, fraction 
+		print i, most_common_key, most_common_count, "/", total, fraction
 		if fraction > 0.85:
-			print "-- Skipping position %d" % i 
-			keep_position[i] = False 
+			print "-- Skipping position %d" % i
+			keep_position[i] = False
 
 
-	import numpy as np 
+	import numpy as np
 	print "# skipped = %d" % (len(keep_position) - np.sum(keep_position))
 
 	with open('MHC_aa_seqs.csv', 'w') as f:

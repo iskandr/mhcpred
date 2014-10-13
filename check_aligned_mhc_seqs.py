@@ -1,4 +1,4 @@
-import sys 
+import sys
 from fasta import parse_fasta
 
 filename = sys.argv[1] if len(sys.argv) > 1 else "multispecies_aligned.fasta"
@@ -20,7 +20,7 @@ for i in xrange(seqlen):
     if count < 25:
         print "---", alleles
     elif count == n_seqs:
-        conserved.add(i) 
+        conserved.add(i)
     elif count > n_seqs - 25:
         print "---", [allele for allele, seq in d.iteritems() if seq[i] == "-"]
 print "Conserved positions: %d %s" % (len(conserved), list(sorted(conserved)))
