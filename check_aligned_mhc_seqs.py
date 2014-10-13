@@ -10,11 +10,15 @@ seqs = d.values()
 seqlen = len(seqs[0])
 n_seqs = len(seqs)
 
-assert all(len(v)==seqlen for v in seqs), [
-    (k, len(v))
-    for (k,v) in d.iteritems()
-    if len(v) != seqlen
-]
+assert all(len(v)==seqlen for v in seqs), \
+    "Alleles with length != %d: %s" % (
+        seqlen,
+        [
+            (k, len(v))
+            for (k,v) in d.iteritems()
+            if len(v) != seqlen
+        ]
+
 conserved = set([])
 for i in xrange(seqlen):
     count = sum(s[i] != "-" for s in seqs)
