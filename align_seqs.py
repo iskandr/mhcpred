@@ -67,6 +67,8 @@ def align(ref, seq):
                 best_score = score
         aligned = best
     return aligned
+
+
 if __name__ == '__main__':
     args = parser.parse_args()
     exclude_alleles = [allele for allele in args.exclude.split(",") if allele]
@@ -92,7 +94,8 @@ if __name__ == '__main__':
             )
             print mismatch
             aligned[allele] = aligned_seq
-    with open(args.output_file) as f:
+
+    with open(args.output_file, 'w') as f:
         for allele, seq in aligned.iteritems():
             f.write(">%s\n%s\n" % (allele, seq))
             f.flush()
