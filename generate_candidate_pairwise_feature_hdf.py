@@ -171,6 +171,7 @@ if __name__ == "__main__":
         for i in xrange(mhc_len):
             for j in xrange(pep_len):
                 colname = "%s_mhc_%d_pep_%d" % (name, i, j)
+                print colname
                 vec = []
                 for (mhc_seq, pep_seq) in seq_pairs:
                     x = mhc_seq[i]
