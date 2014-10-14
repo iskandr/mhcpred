@@ -1,26 +1,26 @@
 from collections import OrderedDict
 
-import pandas as pd 
-import numpy as np 
+import pandas as pd
+import numpy as np
 
-from os.path import exists 
+from os.path import exists
 import subprocess
 import pandas as pd
-import logging 
+import logging
 from epitopes import amino_acid, reduced_alphabet
 
-from dataset_helpers import filter_dataframe, extract_columns 
-        
+from dataset_helpers import filter_dataframe, extract_columns
+
 def generate_aa_feature_data(
         df_peptides,
-        df_mhc, 
+        df_mhc,
         neighboring_residue_interactions=False):
 
-    
+
     (peptide_alleles, peptide_seqs, category, ic50, ic50_mask) = \
         extract_columns(df_peptides)
     print "%d unique peptide alleles" % len(peptide_alleles.unique())
-    
+
     mhc_alleles = df_mhc['Allele'].str.replace('*', '')
     mhc_seqs = df_mhc['Residues']
 
@@ -35,22 +35,22 @@ def generate_aa_feature_data(
         len(unique_alleles)
     )
     logging.info(
-        "Missing allele sequences for %s", 
+        "Missing allele sequences for %s",
         list(sorted(unique_alleles.difference(set(mhc_alleles))))
     )
 
     mhc_seqs_dict = {}
     for allele, seq in zip(mhc_alleles, mhc_seqs):
-        mhc_seqs_dict[allele] = seq 
+        mhc_seqs_dict[allele] = seq
     X = []
     X_solo =[]
     Y_IC50 = []
     Y_category = []
     alleles = []
     n_dims = length * len(mhc_seqs[0])
-    
+
     features = [
-        amino_acid.volume.value_dict, 
+        amino_acid.volume.value_dict,
         amino_acid.pK_side_chain.value_dict,
         amino_acid.hydropathy.value_dict,
         amino_acid.local_flexibility.value_dict,
@@ -62,19 +62,19 @@ def generate_aa_feature_data(
         if allele in mhc_seqs_dict:
             allele_seq = mhc_seqs_dict[allele]
             peptide = peptide_seqs.ix[peptide_idx]
-            
+
             n_peptide_letters = len(peptide)
             n_mhc_letters = len(allele_seq)
             curr_ic50 = ic50[peptide_idx] * ic50_mask[peptide_idx]
             binder = category[peptide_idx]
             print peptide_idx, allele, peptide, curr_ic50, binder
-            
+
             pep_vec = []
             mhc_vec = []
             for f in features:
                 pep_vec.extend([f[x] for x in peptide])
                 mhc_vec.extend([f[x] for x in allele_seq])
-            
+
             vec = pep_vec + mhc_vec
             X.append(np.array(vec))
             X_solo.append(np.array(pep_vec))
@@ -107,21 +107,21 @@ if __name__ == '__main__':
     )
 
     parser.add_argument(
-        "--input-file", 
+        "--input-file",
         default='mhc_grouped.csv')
 
     parser.add_argument(
-        "--mhc-seq-filename", 
+        "--mhc-seq-filename",
         default = "MHC_aa_seqs.csv")
 
- 
+
     parser.add_argument(
         "--length",
-        type=int, 
+        type=int,
         default=9)
 
-    parser.add_argument("--human", 
-        default = False, 
+    parser.add_argument("--human",
+        default = False,
         action="store_true")
 
     parser.add_argument(
@@ -132,19 +132,19 @@ if __name__ == '__main__':
     df_peptides = pd.read_csv(args.input_file)
     print "Loaded %d peptide/allele entries", len(df_peptides)
     print df_peptides.columns
-    
+
     length = args.length
     df_peptides = filter_dataframe(
         df_peptides,
-        mhc_class = args.mhc_class, 
-        length = args.length, 
+        mhc_class = args.mhc_class,
+        length = args.length,
         human = args.human)
 
     df_mhc = pd.read_csv(args.mhc_seq_filename)
     print df_mhc
     print "Loaded %d MHC alleles" % len(df_mhc)
     X, X_pep, Y_IC50, Y_category, alleles = generate_aa_feature_data(
-        df_peptides, 
+        df_peptides,
         df_mhc)
 
     print "Generated X.shape = %s" % (X.shape,)
