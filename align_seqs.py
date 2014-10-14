@@ -80,10 +80,12 @@ class Aligner(object):
         # beginning of the sequence
         best_score = 0
         aligned = seq
-
+        print "ref", ref
+        print "seq", aligned
         for i in xrange(len(seq) - len(ref) + 1):
             candidate = seq[i:]
             n_matches = sum(x==y for (x,y) in izip(candidate, ref))
+            print i, n_matches
             if n_matches > best_score:
                 best_score = n_matches
                 aligned = candidate
@@ -139,7 +141,8 @@ if __name__ == '__main__':
 
     for allele in sorted(seqs.keys()):
         seq = seqs[allele]
-
+        if allele != "Mane-A4*01:03":
+            continue
         if len(seq) < len(ref):
             print "Skipping %s (len=%d)" % (allele, len(seq))
         elif any(c in seq for c in ("X", "Z", "B", "J")):
