@@ -4,6 +4,7 @@ import collections
 import numpy as np
 import h5py
 from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
 
 parser = argparse.ArgumentParser(
     description=
@@ -21,7 +22,7 @@ parser.add_argument(
 parser.add_argument(
     "--iters",
     type = int,
-    default = 200,
+    default = 300,
     help="How many subset models to train"
 )
 
@@ -53,45 +54,27 @@ parser.add_argument(
     help="Should trained models augment data with an intercept column?"
 )
 
+parser.add_argument(
+    "--keep-feature-fraction",
+    type = float,
+    default = 0.1,
+    help="What fraction of features to keep"
+)
 
-def find_best_threshold_accuracy(x, y):
-    thresholds = np.unique(x)
-    best_accuracy = 0
-    best_threshold = None
-    for t in thresholds:
-        mask = (x<=t)
-        acc_below = np.mean(mask == y)
-        acc_above = np.mean(~mask == y)
-        accuracy = max(acc_below, acc_above)
+parser.add_argument(
+    "--output-data-file",
+    type = str,
+    default = "X_selected.npy",
+    help="Where to write selected features as an npy file"
+)
 
-        if accuracy > best_accuracy:
-            best_accuracy = accuracy
-            best_threshold = t
-    return best_accuracy, best_threshold
+parser.add_argument(
+    "--output-label-file",
+    type = str,
+    default = "Y.npy",
+)
 
-def find_threshold_pairs(x1, x2, y):
-    thresholds1 = np.unique(x1)
-    thresholds2 = np.unique(x2)
-    best_accuracy = 0
-    best_threshold = None
-    for t1 in thresholds1:
-        mask1 = (x1<=t1)
-        for t2 in thresholds2:
-            mask2 = (x2<=t2)
-            accuracy = max(
-                np.mean(mask == y)
-                for mask in
-                [
-                  mask1 & mask2,
-                  mask1 & ~mask2,
-                  ~mask1 & mask2,
-                  ~mask1 & ~mask2
-                ]
-            )
-            if accuracy > best_accuracy:
-                best_accuracy = accuracy
-                best_threshold = (t1, t2)
-    return best_accuracy, best_threshold
+
 
 
 if __name__ == "__main__":
@@ -113,7 +96,8 @@ if __name__ == "__main__":
         if not name.upper().startswith("Y")
     ]
     print "Found %d features in %s" % (len(feature_names), args.input_file)
-    y = f['Y'][:] <= args.ic50_cutoff
+    y_ic50 = f['Y'][:]
+    y = y_ic50 <= args.ic50_cutoff
     n_samples = len(y)
     n_features = len(feature_names)
     n_samples_per_iter = int(n_samples * args.sample_fraction)
@@ -135,7 +119,7 @@ if __name__ == "__main__":
     models = [
         LogisticRegression(penalty='l1', C = c, fit_intercept=intercept)
         for c in [10, 1, 0.1, 0.01]
-    ]
+    ] + [RandomForestClassifier(n_estimators=10)]
 
 
     for i in xrange(args.iters):
@@ -184,7 +168,10 @@ if __name__ == "__main__":
                 best_model = model
                 best_accuracy = accuracy
         cutoff = 0.000001
-        coeff = best_model.coef_.ravel()
+        if hasattr(best_model, 'coef_'):
+            coeff = best_model.coef_.ravel()
+        else:
+            coeff = best_model.feature_importances_
         abs_coeff = np.abs(coeff)
         print "-- Fraction nonzero coeffs: ", \
             np.mean(abs_coeff > cutoff)
@@ -207,10 +194,20 @@ if __name__ == "__main__":
     for name, v in feature_nonzero.iteritems():
         feature_scores[name] = v / float(feature_counts[name])
 
+    keep = []
     n_useful = 0
     for name, acc in feature_scores.most_common()[::-1]:
-        if acc > 0:
-            print name, acc, "(%d)" % feature_counts[name]
-            n_useful += 1
+        print name, acc, "(%d)" % feature_counts[name]
+
+    n_kept = int(args.keep_feature_fraction * n_features)
+    for name, acc in feature_scores.most_common(n_kept):
+        if acc >  0:
+            col = f[name][:]
+            keep.append(col)
     print "---"
-    print "# useful features: %d / %d" % (n_useful, n_features)
+    print "# useful features: %d / %d" % (len(keep), n_features)
+
+    X_kept = np.array(keep)
+    print "Final X.shape", X_kept.shape
+    np.save(args.output_data_file, X_kept)
+    np.save(args.output_label_file, y_ic50)
