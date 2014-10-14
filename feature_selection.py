@@ -21,7 +21,7 @@ parser.add_argument(
 parser.add_argument(
     "--iters",
     type = int,
-    default = 100,
+    default = 200,
     help="How many subset models to train"
 )
 
@@ -44,6 +44,13 @@ parser.add_argument(
     type = float,
     default = 5000,
     help="Threshold to separate binders from non-binders"
+)
+
+parser.add_argument(
+    "--model-fit-intercept",
+    type = bool,
+    default = True,
+    help="Should trained models augment data with an intercept column?"
 )
 
 
@@ -123,12 +130,13 @@ if __name__ == "__main__":
     # for each split try different hyperparameters and look
     # at non-zero coefficients in the model with best
     # predictive accuracy
+    intercept = args.model_fit_intercept
+
     models = [
-        LogisticRegression(penalty='l1', C = 1),
-        LogisticRegression(penalty='l1', C = 0.1),
-        LogisticRegression(penalty='l1', C = 0.01),
-        LogisticRegression(penalty='l1', C = 0.001),
+        LogisticRegression(penalty='l1', C = c, fit_intercept=intercept)
+        for c in [10, 1, 0.1, 0.01]
     ]
+
 
     for i in xrange(args.iters):
         np.random.shuffle(all_feature_indices)
@@ -154,6 +162,11 @@ if __name__ == "__main__":
             X_test.append(test)
         X_train = np.array(X_train).T
         X_test = np.array(X_test).T
+        X_mean = X_train.mean(axis=0)
+        X_train -= X_mean
+        X_test -= X_mean
+
+
         best_model = None
         best_accuracy = 0
 
@@ -179,8 +192,9 @@ if __name__ == "__main__":
             print "Skipping iteration #%d due to low accuracy" % (i+1)
             continue
         # value of a predictor is how much better than baseline it did
-        value = best_accuracy - baseline
-        print "-- Improvement over baseline: %0.4f" % value
+        diff = (best_accuracy - baseline)
+        print "-- Improvement over baseline: %0.4f" % diff
+        value = diff / baseline
         total = abs_coeff.sum()
         fractions = abs_coeff/ total
         for i, p in enumerate(fractions):
@@ -193,5 +207,10 @@ if __name__ == "__main__":
     for name, v in feature_nonzero.iteritems():
         feature_scores[name] = v / float(feature_counts[name])
 
+    n_useful = 0
     for name, acc in feature_scores.most_common()[::-1]:
-        print name, acc, "(%d)" % feature_counts[name]
+        if acc > 0:
+            print name, acc, "(%d)" % feature_counts[name]
+            n_useful += 1
+    print "---"
+    print "# useful features: %d / %d" % (n_useful, n_features)
