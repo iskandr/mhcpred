@@ -1,5 +1,6 @@
 import argparse
 import collections
+import math
 
 import numpy as np
 
@@ -14,42 +15,50 @@ parser = argparse.ArgumentParser(
         """
 )
 
+
 parser.add_argument(
-    "--input-file",
+    "input_file",
     default="pairwise_features.hdf",
     help="Input HDF5 file",
-    required=True,
+)
+
+parser.add_argument(
+    "--print-all-columns",
+    help="Print all columns in HDF5 file before doing anything else",
+    default=False,
+    action="store_true",
+
 )
 
 parser.add_argument(
     "--iters",
-    type = int,
-    default = 100,
-    help="How many subset models to train"
+    type=int,
+    default=None,
+    help="How many subset models to train (default: each feature in ~10 models)"
 )
 
 parser.add_argument(
     "--feature-fraction",
-    type = float,
-    default = 0.05,
+    type=float,
+    default=0.25,
     help="What portion of features to use in each model"
 )
 
 parser.add_argument(
     "--sample-fraction",
-    type = float,
-    default = 0.01,
+    type=float,
+    default=0.25,
     help="What portion of sample to train each model on"
 )
 
 parser.add_argument(
     "--target",
-    required=True,
+    default="Y",
     help="Name of target column"
 )
 
 parser.add_argument(
-    "--ignore",
+    "--ignore-columns",
     default="",
     help="Comma separated list of column names to ignore"
 )
@@ -95,11 +104,19 @@ parser.add_argument(
 )
 
 parser.add_argument(
-    "--balance-classes",
+    "--balance-class-weights",
     help="Assign equal weight to pos/neg errors (for unbalanced data)",
     default=False,
     action="store_true"
 )
+
+parser.add_argument(
+    "--downsample-majority-class",
+    help="Number of samples per iteration limited by smallest class",
+    default=False,
+    action="store_true"
+)
+
 
 parser.add_argument(
     "--feature-importance-cutoff",
@@ -150,12 +167,25 @@ if __name__ == "__main__":
     print "ARGUMENTS"
     print args
 
-    assert args.sample_fraction > 0
+    if args.print_all_columns:
+        print "Columns in %s" % args.input_file
+        for k in f.iterkeys():
+            print "  ", k
+
+    assert args.sample_fraction > 0, \
+        "Argument --sample-fraction must be positive"
     assert args.sample_fraction <= 0.5, \
         "Can't use more than 50% of the samples for training iterations, " \
         "not enough left for testing"
-    assert 0 < args.feature_fraction <= 1.0
-    assert args.iters > 0
+
+    assert 0 < args.feature_fraction <= 1.0, \
+        "Argument --feature-fraction must be between 0.0 and 1.0"
+
+    assert args.iters is None or args.iters > 0, \
+        "Number of iterations (--iters) must be positive"
+
+    assert not args.downsample_majority_class, \
+        "Argument --downsample-majority-class not yet implemented"
 
     sample_attribute_names = [x for x in args.sample_attributes.split(",") if x]
     for attr_name in sample_attribute_names:
@@ -163,7 +193,7 @@ if __name__ == "__main__":
         "Attribute '%s' not found in %s" % (attr_name, args.input_file)
 
     target = args.target
-    ignore_columns = [x for x in args.ignore.split(",") if x]
+    ignore_columns = [x for x in args.ignore_columns.split(",") if x]
     ignore_columns += sample_attribute_names
     ignore_columns += [target]
 
@@ -224,7 +254,8 @@ if __name__ == "__main__":
     # predictive accuracy
     intercept = args.model_fit_intercept
 
-    class_weight = 'auto' if args.balance_classes else None
+    #
+    class_weight = 'auto' if args.balance_class_weights else None
     lr_models = [
         LogisticRegression(
             penalty='l1',
@@ -240,8 +271,11 @@ if __name__ == "__main__":
     ]
 
     models = lr_models + rf_models
-
-    for i in xrange(args.iters):
+    if args.iters is None:
+        n_iters = int(math.ceil(10 * n_features / float(n_features_per_iter)))
+    else:
+        n_iters = args.iters
+    for i in xrange(n_iters):
         np.random.shuffle(all_feature_indices)
         np.random.shuffle(all_sample_indices)
         feature_indices = all_feature_indices[:n_features_per_iter]
@@ -254,7 +288,12 @@ if __name__ == "__main__":
         my = Y_test.mean()
         baseline_acc = max(my, 1.0 - my)
         baseline_auc = 0.5
-        print "Baseline accuracy for iter #%d: %0.4f" % (i+1, baseline_acc)
+        print
+        print "============"
+        print "Iter #%d/%d" % (i+1, n_iters)
+        print "============"
+        print
+        print "-- baseline accuracy for iter %0.4f" % baseline_acc
         X_train = []
         X_test = []
         for feature_idx in feature_indices:
@@ -283,7 +322,11 @@ if __name__ == "__main__":
             # for models that don't take a class balancing parameter
             # we have to manually reweight the samples by their inverse class
             # frequency
-            if args.balance_classes and not hasattr(model, 'class_weight'):
+            use_sample_weights = (
+                args.balance_class_weights and
+                not hasattr(model, 'class_weight')
+            )
+            if use_sample_weights:
                 sample_weights = np.zeros_like(Y_train)
                 for class_value in np.unique(Y_train):
                     mask = Y_train == class_value
@@ -309,7 +352,8 @@ if __name__ == "__main__":
                 prob = model.predict_proba(X_test)[:,-1]
 
             auc = roc_auc_score(Y_test, prob)
-            print " * %s\n -- Accuracy=%0.4f, AUC=%0.4f)" % (model, accuracy, auc)
+            print " * %s\n ** Accuracy=%0.4f, AUC=%0.4f\n" % (
+                model, accuracy, auc)
             if auc > best_auc:
                 best_model = model
                 best_accuracy = accuracy
@@ -352,8 +396,12 @@ if __name__ == "__main__":
 
     keep = []
     n_useful = 0
-    for name, acc in feature_scores.most_common()[::-1]:
-        print name, acc, "(%d)" % feature_counts[name]
+    n_zero_scores = sum(score == 0 for score in feature_scores.values())
+    print "# features with score = 0: %d/%d" % (
+        n_zero_scores, len(feature_scores))
+    for name, score in feature_scores.most_common()[::-1]:
+        if score > 0:
+            print name, score, "(n=%d)" % feature_counts[name]
 
     n_kept = int(args.keep_feature_fraction * n_features)
     for name, acc in feature_scores.most_common(n_kept):
