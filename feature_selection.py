@@ -83,6 +83,13 @@ parser.add_argument(
 )
 
 parser.add_argument(
+    "--num-trees",
+    type=int,
+    default=21,
+    help="Number of tree estimators to use with Random Forest models"
+)
+
+parser.add_argument(
     "--keep-feature-fraction",
     type=float,
     default=0.1,
@@ -118,6 +125,13 @@ parser.add_argument(
 )
 
 parser.add_argument(
+    "--min-feature-variance",
+    help="Minimum amount of variance in a feature",
+    default=0.00000001,
+    type=float,
+)
+
+parser.add_argument(
     "--feature-importance-cutoff",
     default=0.000001,
     type=float,
@@ -136,6 +150,23 @@ def examine_features(f, feature_names):
     # checking features for NaN and infinite
     for i, feature_name in enumerate(sorted(feature_names)):
         x = f[feature_name][:]
+
+        assert isinstance(x, np.ndarray), \
+            "Invalid type for %s: %s" % (feature_name, type(x))
+        # NumPy dtype codes:
+        #
+        # b  boolean
+        # i  signed integer
+        # u  unsigned integer
+        # f  floating-point
+        # c  comple x floating-point
+        # O  object
+        # S  (byte-)string
+        # U  Unicode
+        # V  void
+        assert x.dtype.kind in 'biufc', \
+            "Invalid feature type for '%s': %s" % (feature_name, x.dtype)
+
         nnz = (x!=0).sum()
         median = np.median(x)
         iqr = np.percentile(x, 75) - np.percentile(x, 25)
@@ -150,7 +181,7 @@ def examine_features(f, feature_names):
             iqr,
             std)
 
-        if std == 0:
+        if std < args.min_feature_variance:
             print "-- No variance!"
             bad_cols.add(feature_name)
 
@@ -294,9 +325,14 @@ if __name__ == "__main__":
         for c in  Cs
     ]
 
+    n_estimators = args.num_trees
     rf_models = [
-        RandomForestClassifier(n_estimators=15, criterion=c)
+        RandomForestClassifier(
+            n_estimators=n_estimators,
+            max_depth=max_depth,
+            criterion=c)
         for c in ["gini", "entropy"]
+        for max_depth in [None, 10, 20]
     ]
 
     models = lr_models  + rf_models
@@ -367,7 +403,7 @@ if __name__ == "__main__":
         X_train -= X_mean
         X_test -= X_mean
         X_std = X_train.std(axis=0)
-        std_zero_mask = X_std == 0
+        std_zero_mask = X_std < args.min_feature_variance
         std_zero_indices = np.nonzero(std_zero_mask)[0]
         if len(std_zero_indices) > 0:
             print "-- Dropping %d zero variance features: %s" % (

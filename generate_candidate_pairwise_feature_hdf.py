@@ -19,7 +19,12 @@ parser.add_argument(
     default=9,
     type=int,
 )
-
+parser.add_argument(
+    "--limit-num-alleles",
+    default=None,
+    type=int,
+    help="Only transform a subset of the MHC alleles (for debugging)"
+)
 parser.add_argument(
     "--mhc-binding-file",
     required=True,
@@ -56,15 +61,13 @@ parser.add_argument(
 parser.add_argument(
     "--mhc-seqs-file",
     required=True,
-    help="FASTA file with MHC pseudosequences")
-
+    help="FASTA file with MHC pseudosequences"
+)
 parser.add_argument(
     "--output-file",
     default="pairwise_features.hdf",
     help="Output HDF5 file"
 )
-
-
 parser.add_argument(
     "--output-allele-column",
     default=None,
@@ -127,7 +130,13 @@ if __name__ == "__main__":
     seq_pairs = []
     Y = []
     alleles = []
+    distinct_allele_count = 0
+
     for allele in sorted(mhc_seqs.keys()):
+        if args.limit_num_alleles:
+            if distinct_allele_count >= args.limit_num_alleles:
+                break
+
         mhc_seq = mhc_seqs[allele]
 
         mask = binding_alleles == allele
@@ -136,6 +145,7 @@ if __name__ == "__main__":
         count = len(subset)
         if count > 0:
             print allele, count
+            distinct_allele_count += 1
             peptides = subset[args.mhc_binding_peptide_column]
             ic50s = subset[args.mhc_binding_measurement_column]
             for peptide, ic50 in zip(peptides, ic50s):
@@ -246,9 +256,13 @@ if __name__ == "__main__":
             rows[key1] = row
 
         assert len(rows) > 0
-        row_len = rows.values()[0]
+        row_len = len(rows.values()[0])
         assert row_len > 0
-        assert all(len(row) == row_len for row in rows)
+        assert all(len(row) == row_len for row in rows.values()), \
+            "Lengths: %s != %d" % (
+                [ (k, len(rows[k])) for k in rows.keys()],
+                row_len
+            )
 
         for i in xrange(pep_len):
             for j in xrange(row_len):
@@ -281,5 +295,5 @@ if __name__ == "__main__":
         add_neighboring_mhc_features(d, name)
         add_matrix_row_features(d, name)
 
-    print "Closing file..."
+    print "Closing file %s..." % args.output_file
     f.close()
