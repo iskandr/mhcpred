@@ -62,38 +62,3 @@ def parse_fasta_mhc_files(
                     seqs[allele] = seq
     return seqs
 
-def parse_aa_table(filename, coeff_type = int):
-    """
-    Parse a table of pairwise amino acid coefficient (e.g. BLOSUM50)
-    """
-    with open(filename, 'r') as f:
-        contents = f.read()
-        lines = contents.split("\n")
-        # drop comments
-        lines = [line for line in lines if not line.startswith("#")]
-        # drop CR endline characters
-        lines = [line.replace("\r", "") for line in lines]
-        # skip empty lines
-        lines = [line for line in lines if line]
-
-        labels = lines[0].split()
-
-        assert len(labels) >= 20, \
-            "Expected 20+ amino acids but first line '%s' has %d fields" % (
-            lines[0],
-            len(labels)
-            )
-        coeffs = {}
-        for line in lines[1:]:
-
-            fields = line.split()
-            assert len(fields) >= 21, \
-                "Expected AA and 20+ coefficients but '%s' has %d fields" % (
-                    line, len(fields)
-                )
-            x = fields[0]
-            for i, coeff_str in enumerate(fields[1:]):
-                y = labels[i]
-                coeff = coeff_type(coeff_str)
-                coeffs[x+y] = coeff
-        return coeffs

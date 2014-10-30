@@ -3,10 +3,10 @@ import argparse
 import collections
 from itertools import izip
 
-from parsing import parse_fasta_mhc_dirs, parse_aa_table
+from parsing import parse_fasta_mhc_dirs
 
 import numpy as np
-
+from pepdata import amino_acid
 
 parser = argparse.ArgumentParser(
     description='Align MHC sequences')
@@ -43,9 +43,9 @@ parser.add_argument(
 )
 
 parser.add_argument(
-    "--coeff-file",
+    "--coeff-matrix",
     type=str,
-    default="BLOSUM50",
+    default="blosum50",
     help="File containing BLOSUM matrix coefficients"
 )
 
@@ -53,9 +53,9 @@ class Aligner(object):
 
     def __init__(
             self,
-            coefficient_matrix_filename="BLOSUM50",
+            coefficient_matrix="blosum50",
             exact_match_bonus = 0):
-        self.coeffs = parse_aa_table(coefficient_matrix_filename)
+        self.coeffs = getattr(amino_acid, coefficient_matrix)
         self.nested_coeffs_dict = {}
         for k,v in self.coeffs.iteritems():
             x, y = k
@@ -137,7 +137,7 @@ if __name__ == '__main__':
     print "Length", len(ref)
 
     aligned = collections.OrderedDict()
-    aligner = Aligner(args.coeff_file)
+    aligner = Aligner(args.coeff_matrix)
 
     for allele in sorted(seqs.keys()):
         seq = seqs[allele]

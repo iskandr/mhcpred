@@ -90,10 +90,10 @@ parser.add_argument(
 )
 
 parser.add_argument(
-    "--keep-feature-fraction",
+    "--keep-feature-importance-ratio",
+    default=0.001,
     type=float,
-    default=0.1,
-    help="What fraction of features to keep"
+    help="Minimal ratio to the best feature importance"
 )
 
 parser.add_argument(
@@ -133,9 +133,9 @@ parser.add_argument(
 
 parser.add_argument(
     "--feature-importance-cutoff",
-    default=0.000001,
+    default=0.0001,
     type=float,
-    help="How small can a feature weight/importance get before we ignore it?"
+    help="Smallest feature importance to keep from a single model",
 )
 
 parser.add_argument(
@@ -144,6 +144,8 @@ parser.add_argument(
     action="store_true",
     help="In addition to LogisticRegression also use LinearSVC"
 )
+
+
 
 def examine_features(f, feature_names):
     bad_cols = set([])
@@ -405,6 +407,7 @@ if __name__ == "__main__":
         X_std = X_train.std(axis=0)
         std_zero_mask = X_std < args.min_feature_variance
         std_zero_indices = np.nonzero(std_zero_mask)[0]
+        # drop features with identical values across the sample
         if len(std_zero_indices) > 0:
             print "-- Dropping %d zero variance features: %s" % (
                 len(std_zero_indices),
@@ -490,6 +493,7 @@ if __name__ == "__main__":
         nz_coeff_mask = abs_coeff > args.feature_importance_cutoff
         nnz_coeff = nz_coeff_mask.sum()
         prct_nz_coeff = nz_coeff_mask.mean()
+        abs_coeff[~nz_coeff_mask] = 0
         print "-- %% nonzero coeffs %0.4f (min=%s, max=%s, median=%s)" % (
             prct_nz_coeff,
             np.min(coeff),
@@ -521,8 +525,6 @@ if __name__ == "__main__":
     for name, v in feature_nonzero.iteritems():
         feature_scores[name] = v / float(feature_counts[name])
 
-    keep = []
-    n_useful = 0
     n_zero_scores = sum(score == 0 for score in feature_scores.values())
 
     print
@@ -534,9 +536,15 @@ if __name__ == "__main__":
     for name, score in feature_scores.most_common()[::-1]:
         print name, score, "(n=%d)" % feature_counts[name]
 
-    n_kept = int(args.keep_feature_fraction * n_features)
-    for name, acc in feature_scores.most_common(n_kept):
-        if acc >  0:
+    n_nonzero_scores =  len(feature_scores) - n_zero_scores
+    assert n_nonzero_scores > 0, "All features had zero importance!"
+
+    feature_score_pairs = feature_scores.most_common(n_nonzero_scores)
+    best_acc = feature_score_pairs[0][1]
+    score_cutoff = best_acc * args.min_feature_importance_ratio
+    keep = []
+    for name, acc in feature_score_pairs:
+        if acc >= score_cutoff:
             col = f[name][:]
             keep.append(col)
     print "---"

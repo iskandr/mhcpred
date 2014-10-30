@@ -1,10 +1,9 @@
 import argparse
 
 from parsing import  parse_fasta_mhc_files
-import pmbec
 
 import h5py
-from epitopes import amino_acid
+from pepdata import amino_acid, pmbec
 import numpy as np
 import pandas as pd
 
@@ -63,15 +62,24 @@ parser.add_argument(
     required=True,
     help="FASTA file with MHC pseudosequences"
 )
+
 parser.add_argument(
     "--output-file",
     default="pairwise_features.hdf",
     help="Output HDF5 file"
 )
+
 parser.add_argument(
     "--output-allele-column",
     default=None,
     help="Name of MHC allele column in output file"
+)
+
+parser.add_argument(
+    "--min-feature-variance",
+    default=10.0**-6,
+    type=float,
+    help="Smallest variance in a feature for us to keep it",
 )
 
 AA_FEATURES = [
@@ -83,15 +91,16 @@ AA_FEATURES = [
     'accessible_surface_area',
     'local_flexibility',
     'refractivity',
-    'alpha_helix_score_dict',
-    'beta_sheet_score_dict',
-    'turn_score_dict'
+    'alpha_helix_score',
+    'beta_sheet_score',
+    'turn_score'
 ]
 
 PAIRWISE_FEATURES = [
-    'coil_vs_strand_dict',
-    'helix_vs_strand_dict',
-    'coil_vs_helix_dict',
+    'coil_vs_strand',
+    'helix_vs_strand',
+    'coil_vs_helix',
+    'blosum50',
 ]
 
 
@@ -175,21 +184,30 @@ if __name__ == "__main__":
     mhc_len = len(mhc_seq)
     pep_len = len(pep_seq)
 
+    def add_feature(colname, vec):
+        vec = np.array(vec)
+        std = np.std(vec)
+        if std < args.min_feature_variance:
+            print "-- Insufficient variance in feature %s (%0.4f)" % (
+                colname, std)
+        else:
+            print colname
+            f[colname] = vec
+
     def add_single_residue_features(d, name):
         for i in xrange(pep_len):
             vec = []
             colname = name + "_pep_%d" % i
             for (_, pep_seq) in seq_pairs:
                 vec.append(d[pep_seq[i]])
-            f[colname] = np.array(vec)
+            add_feature(colname, vec)
 
         for i in xrange(mhc_len):
             vec = []
             colname = name + "_mhc_%d" % i
-            print colname
             for (mhc_seq, _) in seq_pairs:
                 vec.append(d[mhc_seq[i]])
-            f[colname] = np.array(vec)
+            add_feature(colname, vec)
 
     def add_single_residue_features(d, name):
         for i in xrange(pep_len):
@@ -197,15 +215,14 @@ if __name__ == "__main__":
             colname = name + "_pep_%d" % i
             for (_, pep_seq) in seq_pairs:
                 vec.append(d[pep_seq[i]])
-            f[colname] = np.array(vec)
+            add_feature(colname, vec)
 
         for i in xrange(mhc_len):
             vec = []
             colname = name + "_mhc_%d" % i
-            print colname
             for (mhc_seq, _) in seq_pairs:
                 vec.append(d[mhc_seq[i]])
-            f[colname] = np.array(vec)
+            add_feature(colname, vec)
 
     for name in AA_FEATURES:
         d = getattr(amino_acid, name)
@@ -219,23 +236,30 @@ if __name__ == "__main__":
       for i in xrange(mhc_len):
         for j in xrange(pep_len):
             colname = "%s_mhc_%d_pep_%d" % (name, i, j)
-            print colname
             vec = []
             for (mhc_seq, pep_seq) in seq_pairs:
                 x = mhc_seq[i]
                 y = mhc_seq[j]
                 vec.append(d[x][y])
-            f[colname] = np.array(vec)
+            add_feature(colname, vec)
 
     def add_neighboring_mhc_features(d, name):
-        for i in xrange(1, mhc_len-1):
-            for j in [i-1, i+1]:
+        for i in xrange(0, mhc_len-1):
+            for j in [i+1]:
                 colname = "%s_mhc_%d_mhc_%d" % (name, i, j)
-                print colname
                 vec = []
                 for (mhc_seq, _) in seq_pairs:
                     vec.append(d[mhc_seq[i]][mhc_seq[j]])
-                f[colname] = vec
+                add_feature(colname, vec)
+
+    def add_neighboring_pep_features(d, name):
+        for i in xrange(0, pep_len-1):
+            for j in [i+1]:
+                colname = "%s_pep_%d_pep_%d" % (name, i, j)
+                vec = []
+                for (_, pep_seq) in seq_pairs:
+                    vec.append(d[pep_seq[i]][pep_seq[j]])
+                add_feature(colname, vec)
 
     def add_matrix_row_features(d, name):
         """
@@ -272,7 +296,7 @@ if __name__ == "__main__":
                     residue = pep_seq[i]
                     row = rows[residue]
                     vec.append(row[j])
-                f[colname] = vec
+                add_feature(colname, vec)
 
         for i in xrange(mhc_len):
             for j in xrange(row_len):
@@ -282,9 +306,7 @@ if __name__ == "__main__":
                     mhc_residue = mhc_seq[i]
                     row = rows[mhc_residue]
                     vec.append(row[j])
-                f[colname] = vec
-
-
+                add_feature(colname, vec)
 
     matrices = [(name, getattr(amino_acid, name)) for name in PAIRWISE_FEATURES]
     pmbec_dict = pmbec.read_coefficients(key_type='row')
@@ -293,7 +315,9 @@ if __name__ == "__main__":
     for name, d in matrices:
         add_pairwise_features(d, name)
         add_neighboring_mhc_features(d, name)
+        add_neighboring_pep_features(d, name)
         add_matrix_row_features(d, name)
 
+    print "Generated %d features" % len(f.keys())
     print "Closing file %s..." % args.output_file
     f.close()
