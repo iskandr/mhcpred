@@ -64,6 +64,19 @@ parser.add_argument(
 )
 
 parser.add_argument(
+    "--ignore-prefix",
+    default=None,
+    help="Ignore any columns which start with this prefix"
+)
+
+parser.add_argument(
+    "--ignore-suffix",
+    default=None,
+    help="Ignore any columns which start with this suffix"
+)
+
+
+parser.add_argument(
     "--sample-attributes",
     default="",
     help="Comma separated list of columns to keep associated with each sample",
@@ -90,8 +103,8 @@ parser.add_argument(
 )
 
 parser.add_argument(
-    "--keep-feature-importance-ratio",
-    default=0.001,
+    "--min-feature-importance-ratio",
+    default=0.01,
     type=float,
     help="Minimal ratio to the best feature importance"
 )
@@ -270,6 +283,11 @@ if __name__ == "__main__":
     ignore_columns = [x for x in args.ignore_columns.split(",") if x]
     ignore_columns += sample_attribute_names
     ignore_columns += [target]
+    for column_name in f.iterkeys():
+        if args.ignore_prefix and column_name.startswith(args.ignore_prefix):
+            ignore_columns.append(column_name)
+        elif args.ignore_suffix and column_name.endswith(args.ignore_suffix):
+            ignore_columns.append(column_name)
 
     assert target in f, \
         "Target column '%s' not found in %s" % (target, args.input_file)
@@ -308,7 +326,7 @@ if __name__ == "__main__":
     all_feature_indices = np.arange(n_features)
 
     feature_counts = collections.Counter()
-    feature_nonzero = collections.Counter()
+    feature_values = collections.Counter()
 
     # for each split try different hyperparameters and look
     # at non-zero coefficients in the model with best
@@ -421,11 +439,22 @@ if __name__ == "__main__":
             X_train = X_train[:, std_nonzero_mask]
             X_test = X_test[:, std_nonzero_mask]
             X_std = X_std[std_nonzero_mask]
-            feature_indices = [
-                feature_indices[i]
-                for i,b in enumerate(std_nonzero_mask)
-                if b
-            ]
+
+
+            reduced_feature_indices = []
+            for i,b in enumerate(std_nonzero_mask):
+                feature_idx = feature_indices[i]
+                if b:
+                    reduced_feature_indices.append(feature_idx)
+                else:
+                    # columns that are dropped still count as having
+                    # participated in the model, they just weren't useful
+                    name = feature_names[feature_idx]
+                    feature_counts[name] += 1
+                    feature_values[name] += 0
+
+            feature_indices = reduced_feature_indices
+
             assert X_train.shape[1] == X_test.shape[1]
             assert len(X_std) == X_train.shape[1]
             assert len(feature_indices) == X_train.shape[1], \
@@ -519,10 +548,11 @@ if __name__ == "__main__":
             feature_idx = feature_indices[i]
             name = feature_names[feature_idx]
             feature_counts[name] += 1
-            feature_nonzero[name] += value * p
+            feature_values[name] += value * p
 
+    # feature scores are average feature values
     feature_scores = collections.Counter()
-    for name, v in feature_nonzero.iteritems():
+    for name, v in feature_values.iteritems():
         feature_scores[name] = v / float(feature_counts[name])
 
     n_zero_scores = sum(score == 0 for score in feature_scores.values())
@@ -542,17 +572,20 @@ if __name__ == "__main__":
     feature_score_pairs = feature_scores.most_common(n_nonzero_scores)
     best_acc = feature_score_pairs[0][1]
     score_cutoff = best_acc * args.min_feature_importance_ratio
-    keep = []
+
+    keep_cols = []
+    keep_names = []
     for name, acc in feature_score_pairs:
         if acc >= score_cutoff:
             col = f[name][:]
-            keep.append(col)
+            keep_cols.append(col)
+            keep_names.append(name)
     print "---"
-    print "# useful features: %d / %d" % (len(keep), n_features)
+    print "# useful features: %d / %d" % (len(keep_cols), n_features)
 
-    X_kept = np.array(keep).T
+    X_kept = np.array(keep_cols).T
     print "Final X.shape", X_kept.shape
-    output_dictionary = {"X": X_kept, "y":y}
+    output_dictionary = {"X": X_kept, "y":y, "features" : keep_names}
     for attr_name in sample_attribute_names:
         output_dictionary[attr_name] = f[attr_name][:]
     np.savez(args.output_data_file, **output_dictionary)
